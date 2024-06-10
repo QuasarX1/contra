@@ -25,7 +25,7 @@ classifiers = [
 ]
 dependencies = [
   "numpy",
-  "hdf5",
+  "h5py",
   "pyread-eagle",
   "swiftsimio",
 ]
