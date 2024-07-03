@@ -188,13 +188,13 @@ class SnapshotStatsDataset(Struct):
                 doc = "Total volume particles in haloes in the snapshot.")
     particles_matched_total_volume = TypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume of newly matched particles in the snapshot.")
-    particles_matched_total_volume_gas = TypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
+    particles_matched_total_volume_gas = NullableTypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume of newly matched gas particles in the snapshot.")
-    particles_matched_total_volume_star = TypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
+    particles_matched_total_volume_star = NullableTypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume of newly matched star particles in the snapshot.")
-    particles_matched_total_volume_black_hole = TypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
+    particles_matched_total_volume_black_hole = NullableTypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume of newly matched black hole particles in the snapshot.")
-    particles_matched_total_volume_dark_matter = TypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
+    particles_matched_total_volume_dark_matter = NullableTypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume of newly matched dark matter particles in the snapshot.")
     
     def __str__(self):
