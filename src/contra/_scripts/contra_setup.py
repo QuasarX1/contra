@@ -3,4 +3,4 @@
 # SPDX-License-Identifier: None
 
 def main():
-    pass
+    pass#TODO: create arguments for each property in ContraSettings

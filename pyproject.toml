@@ -24,11 +24,15 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
-  "numpy",
+  "numpy<2",
   "unyt",
+  "scipy",
+  "matplotlib",
+  "PyQt5",
   "h5py",
   "pyread-eagle",
   "swiftsimio",
+  "pykdtree",
   "QuasarCode",
 ]
 
@@ -46,6 +50,7 @@ contra-run = "contra._scripts.contra_run:main"
 path = "src/contra/__about__.py"
 
 [tool.hatch.envs.default]
+python = "3.10"
 dependencies = [
   "coverage[toml]>=6.5",
   "pytest",

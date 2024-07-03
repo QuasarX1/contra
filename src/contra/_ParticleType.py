@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: None
 from enum import Enum
+from typing import Tuple
 
 class ParticleType(Enum):
     gas = 0
@@ -12,6 +13,14 @@ class ParticleType(Enum):
     @property
     def common_hdf5_name(self) -> str:
         return f"PartType{self.value}"
+
+    @property
+    def name(self) -> str:
+        return "gas" if self == ParticleType.gas else "dark matter" if self == ParticleType.dark_matter else "star" if self == ParticleType.star else "black hole"
+
+    @staticmethod
+    def get_all():
+        return (ParticleType.gas, ParticleType.star, ParticleType.black_hole, ParticleType.dark_matter)
     
     def __str__(self) -> str:
         return self.common_hdf5_name
@@ -21,6 +30,6 @@ class ParticleType(Enum):
             dataset,
                  "gas"         if self == ParticleType.gas
             else "dark_matter" if self == ParticleType.dark_matter
-            else "star"        if self == ParticleType.star
-            else "black_hole"
+            else "stars"        if self == ParticleType.star
+            else "black_holes"
         )
