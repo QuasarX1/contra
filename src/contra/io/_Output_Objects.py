@@ -255,7 +255,7 @@ dark mater:
     number of particles:                     {self.N_particles_dark_matter}
     number of particles in haloes:           {self.N_halo_particles_dark_matter}
     number of particles newly matched:       {self.N_particles_matched_dark_matter}
-    total volume of particles newly matched: {self.particles_matched_total_volume_matter}\
+    total volume of particles newly matched: {self.particles_matched_total_volume_dark_matter}\
 """ if self.N_particles_dark_matter is not None else "dark mater: ---")
     
     @staticmethod
@@ -273,8 +273,6 @@ dark mater:
         data.N_halo_children = catalogue.number_of_children
         data.N_halo_decendants = catalogue.number_of_decendants
 
-        Console.print_debug("1")
-
         data.particle_total_volume = sum(
             [
                 snapshot.get_volumes(p).to("Mpc**3").sum()
@@ -283,31 +281,16 @@ dark mater:
             ],
             start = unyt_quantity(0.0, units = "Mpc**3")
         )
-#        data.particle_total_volume = sum(
-#            [
-#                (snapshot.get_smoothing_lengths(p).to("Mpc")**3).sum()
-#                for p
-#                in ParticleType.get_all()
-#            ],
-#            start = unyt_quantity(0.0, units = "Mpc**3")
-#        ) * (np.pi * 4/3)
-
-        Console.print_debug("2")
 
         data.N_haloes_top_level = int((catalogue.get_halo_parent_IDs() == -1).sum())
-
-        Console.print_debug("3")
 
         data.N_halo_particles_gas = len(catalogue.get_particle_IDs(ParticleType.gas))
         data.N_halo_particles_star = len(catalogue.get_particle_IDs(ParticleType.star))
         data.N_halo_particles_black_hole = len(catalogue.get_particle_IDs(ParticleType.black_hole))
         data.N_halo_particles_dark_matter = len(catalogue.get_particle_IDs(ParticleType.dark_matter))
 
-        Console.print_debug("4")
-
         data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
         data.halo_particle_total_volume = sum([ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_volumes(p).to("Mpc**3")).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3"))
-#        data.halo_particle_total_volume = sum([(ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
 
         return data
 
