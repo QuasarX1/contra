@@ -16,6 +16,7 @@ from QuasarCode import Settings, Console
 from QuasarCode.Data import VersionInfomation
 from QuasarCode.Tools import ScriptWrapper
 
+'''
 def OLD_main():
     ScriptWrapper(
         command = "contra-run",
@@ -139,6 +140,7 @@ def OLD_main():
             )
         )
     ).run(__main)
+'''
 
 def main():
     ScriptWrapper(
@@ -368,14 +370,15 @@ async def __main(
     Console.print_info("Loading snapshot and catalogue files...", end = "")
     timer_start = datetime.datetime.now()
 
-    # Load target snapshot
+    # Load target snapshot and catalogue
     target_snap = new_snapshot_type(snapshot_files[target_snapshot])
+    target_cat = new_catalogue_type(*catalogue_files[target_snapshot], target_snap)
 
     snapshots: List[SnapshotBase] = []
     catalogues: List[CatalogueBase] = []
     for snap_key in search_snapshot_file_order:
         snapshots.append(new_snapshot_type(snapshot_files[snap_key]) if snap_key != target_snapshot else target_snap)
-        catalogues.append(new_catalogue_type(*catalogue_files[snap_key], snapshots[-1]))
+        catalogues.append(new_catalogue_type(*catalogue_files[snap_key], snapshots[-1]) if snap_key != target_snapshot else target_cat)
 #        if is_SWIFT:
 #            catalogues.append(CatalogueSOAP(*catalogue_files[snap_key], snapshots[-1]))
 #        else: # is_EAGLE
@@ -403,7 +406,9 @@ async def __main(
         output_file.write_header(HeaderDataset(
             version = VersionInfomation.from_string(VERSION),
             date = start_date,
-            target_file = target_snap.filepath,
+            target_snapshot = target_snap.filepath,
+            target_catalogue_membership_file = target_cat.membership_filepath,
+            target_catalogue_properties_file = target_cat.properties_filepath,
             simulation_type = "SWIFT" if is_SWIFT else "EAGLE",
             redshift = target_snap.z,
             N_searched_snapshots = N_snapshots,
@@ -437,69 +442,71 @@ async def __main(
         Console.print_verbose_info("    Calculating initial statistics")
 
         if do_stats:
-            # Compute statistics for the snapshot
-            snap_stats = SnapshotStatsDataset()
-
-            # Simple calls
-            snap_stats.snapshot_filepath = snap.filepath
-            snap_stats.catalogue_filepath = cat.membership_filepath
-            snap_stats.redshift = cat.z
-            snap_stats.N_particles = sum([snap.number_of_particles(p) for p in ParticleType.get_all()])
-            for part_type in ParticleType.get_all():
-                setattr(snap_stats, f"N_particles_{part_type.name.replace(' ', '_')}", snap.number_of_particles(part_type))
-            snap_stats.N_haloes = len(cat)
-            snap_stats.N_halo_children = cat.number_of_children
-            snap_stats.N_halo_decendants = cat.number_of_decendants
-
-            # Async operation functions
-
-            async def calc__particle_total_volume():
-                snap_stats.particle_total_volume = sum(
-                    [
-                        (smoothing_lengths.to("Mpc")**3).sum()
-                        for smoothing_lengths
-                        in await asyncio.gather(*[snap.get_smoothing_lengths_async(p) for p in ParticleType.get_all()])
-                    ],
-                    start = unyt_quantity(0.0, units = "Mpc**3")
-                ) * (np.pi * 4/3)
-
-            async def calc__N_haloes_top_level():
-                snap_stats.N_haloes_top_level = int((await cat.get_halo_parent_IDs_async() == -1).sum())
-
-            async def calc__N_halo_particles_of_type(part_type: ParticleType):
-                return len(await cat.get_particle_IDs_async(part_type))
-            async def calc__N_halo_particles():
-                (
-                    snap_stats.N_halo_particles_gas,
-                    snap_stats.N_halo_particles_star,
-                    snap_stats.N_halo_particles_black_hole,
-                    snap_stats.N_halo_particles_dark_matter,
-                ) = await asyncio.gather(
-                    calc__N_halo_particles_of_type(ParticleType.gas),
-                    calc__N_halo_particles_of_type(ParticleType.star),
-                    calc__N_halo_particles_of_type(ParticleType.black_hole),
-                    calc__N_halo_particles_of_type(ParticleType.dark_matter)
-                )
-
-            # Run all async functions
-            await asyncio.gather(
-                calc__particle_total_volume(),
-                calc__N_haloes_top_level(),
-                calc__N_halo_particles()
-            )
-
-    #        #TODO: NOT PER HALO!?!?
-    #        snap_stats.N_halo_particles = np.zeros(snap_stats.N_haloes, dtype = int)
-    #        snap_stats.halo_particle_total_volume = np.zeros(snap_stats.N_haloes, dtype = float)
-    #        for p in ParticleType.get_all():
-    #            halo_indexes_in_snap_order = cat.get_halo_IDs_by_snapshot_particle(p) - cat.get_halo_IDs()[0]
-    #            halo_particle_mask = halo_indexes_in_snap_order != -1 - cat.get_halo_IDs()[0]#TODO: get a better way of doing this offset
-    #            snap_stats.N_halo_particles = snap_stats.N_halo_particles + np.bincount(halo_indexes_in_snap_order[halo_particle_mask])
-    #            snap_stats.halo_particle_total_volume = snap_stats.halo_particle_total_volume + np.bincount(halo_indexes_in_snap_order[halo_particle_mask], weights = snap.get_smoothing_lengths(p)[halo_particle_mask]**3) * (np.pi * 4/3)
-    #        Console.print_debug(4)#TODO:REMOVE
-
-            snap_stats.N_halo_particles = sum([len(cat.get_particle_IDs(p)) for p in ParticleType.get_all()])
-            snap_stats.halo_particle_total_volume = sum([(ArrayReorder.create(snap.get_IDs(p), cat.get_particle_IDs(p))(snap.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
+            # Compute initial statistics for the snapshot
+            snap_stats = SnapshotStatsDataset.initialise_partial(snap, cat)
+#            snap_stats = SnapshotStatsDataset()
+#
+#            # Simple calls
+#            snap_stats.snapshot_filepath = snap.filepath
+#            snap_stats.catalogue_membership_filepath = cat.membership_filepath
+#            snap_stats.catalogue_properties_filepath = cat.properties_filepath
+#            snap_stats.redshift = cat.z
+#            snap_stats.N_particles = sum([snap.number_of_particles(p) for p in ParticleType.get_all()])
+#            for part_type in ParticleType.get_all():
+#                setattr(snap_stats, f"N_particles_{part_type.name.replace(' ', '_')}", snap.number_of_particles(part_type))
+#            snap_stats.N_haloes = len(cat)
+#            snap_stats.N_halo_children = cat.number_of_children
+#            snap_stats.N_halo_decendants = cat.number_of_decendants
+#
+#            # Async operation functions
+#
+#            async def calc__particle_total_volume():
+#                snap_stats.particle_total_volume = sum(
+#                    [
+#                        (smoothing_lengths.to("Mpc")**3).sum()
+#                        for smoothing_lengths
+#                        in await asyncio.gather(*[snap.get_smoothing_lengths_async(p) for p in ParticleType.get_all()])
+#                    ],
+#                    start = unyt_quantity(0.0, units = "Mpc**3")
+#                ) * (np.pi * 4/3)
+#
+#            async def calc__N_haloes_top_level():
+#                snap_stats.N_haloes_top_level = int((await cat.get_halo_parent_IDs_async() == -1).sum())
+#
+#            async def calc__N_halo_particles_of_type(part_type: ParticleType):
+#                return len(await cat.get_particle_IDs_async(part_type))
+#            async def calc__N_halo_particles():
+#                (
+#                    snap_stats.N_halo_particles_gas,
+#                    snap_stats.N_halo_particles_star,
+#                    snap_stats.N_halo_particles_black_hole,
+#                    snap_stats.N_halo_particles_dark_matter,
+#                ) = await asyncio.gather(
+#                    calc__N_halo_particles_of_type(ParticleType.gas),
+#                    calc__N_halo_particles_of_type(ParticleType.star),
+#                    calc__N_halo_particles_of_type(ParticleType.black_hole),
+#                    calc__N_halo_particles_of_type(ParticleType.dark_matter)
+#                )
+#
+#            # Run all async functions
+#            await asyncio.gather(
+#                calc__particle_total_volume(),
+#                calc__N_haloes_top_level(),
+#                calc__N_halo_particles()
+#            )
+#
+#    #        #TODO: NOT PER HALO!?!?
+#    #        snap_stats.N_halo_particles = np.zeros(snap_stats.N_haloes, dtype = int)
+#    #        snap_stats.halo_particle_total_volume = np.zeros(snap_stats.N_haloes, dtype = float)
+#    #        for p in ParticleType.get_all():
+#    #            halo_indexes_in_snap_order = cat.get_halo_IDs_by_snapshot_particle(p) - cat.get_halo_IDs()[0]
+#    #            halo_particle_mask = halo_indexes_in_snap_order != -1 - cat.get_halo_IDs()[0]#TODO: get a better way of doing this offset
+#    #            snap_stats.N_halo_particles = snap_stats.N_halo_particles + np.bincount(halo_indexes_in_snap_order[halo_particle_mask])
+#    #            snap_stats.halo_particle_total_volume = snap_stats.halo_particle_total_volume + np.bincount(halo_indexes_in_snap_order[halo_particle_mask], weights = snap.get_smoothing_lengths(p)[halo_particle_mask]**3) * (np.pi * 4/3)
+#    #        Console.print_debug(4)#TODO:REMOVE
+#
+#            snap_stats.N_halo_particles = sum([len(cat.get_particle_IDs(p)) for p in ParticleType.get_all()])
+#            snap_stats.halo_particle_total_volume = sum([(ArrayReorder.create(snap.get_IDs(p), cat.get_particle_IDs(p))(snap.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
 
             # These are calculated during the search
             snap_stats.N_particles_matched = 0
@@ -564,7 +571,7 @@ async def __main(
                 output_file.write_snapshot_stats_dataset(snap_index, snap_stats)
 
             if Settings.verbose or Settings.debug:
-                (Console.print_info if Settings.verbose else Console.print_debug)(f"Stats for snapshot {snap_index + 1}:\n{snap_stats}")
+                (Console.print_info if Settings.verbose else Console.print_debug)(f"    Stats for snapshot {snap_index + 1}:\n        {str(snap_stats).replace('\n', '\n        ')}")
 
     Console.print_info("Reverse search complete.")
     Console.print_info("Writing final output.")

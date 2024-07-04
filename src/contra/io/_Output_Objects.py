@@ -3,17 +3,24 @@
 # SPDX-License-Identifier: None
 import datetime
 from typing import Union, Collection, List, Dict
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import h5py as h5
 from unyt import unyt_quantity
+from QuasarCode import Console
 from QuasarCode.Data import VersionInfomation
 from QuasarCode.Tools import Struct, TypedAutoProperty, NullableTypedAutoProperty, TypeShield, NestedTypeShield
 
+from .._ArrayReorder import ArrayReorder
 from .._ParticleType import ParticleType
 from ._SnapshotBase import SnapshotBase
 from ._SnapshotSWIFT import SnapshotSWIFT
 from ._SnapshotEAGLE import SnapshotEAGLE
+from ._CatalogueBase import CatalogueBase
+from ._CatalogueSOAP import CatalogueSOAP
+from ._CatalogueSUBFIND import CatalogueSUBFIND
 
 class HeaderDataset(Struct):
     """
@@ -21,7 +28,11 @@ class HeaderDataset(Struct):
 
     date
 
-    target_file
+    target_snapshot
+
+    target_catalogue_membership_file
+
+    target_catalogue_properties_file
 
     simulation_type
 
@@ -46,8 +57,12 @@ class HeaderDataset(Struct):
                 doc = "Contra version number.")
     date = TypedAutoProperty[datetime.date](TypeShield(datetime.date),
                 doc = "Date of execution (start of program).")
-    target_file = TypedAutoProperty[str](TypeShield(str),
+    target_snapshot = TypedAutoProperty[str](TypeShield(str),
                 doc = "Snapshot file defining positions of target particles.")
+    target_catalogue_membership_file = TypedAutoProperty[str](TypeShield(str),
+                doc = "Catalogue membership file corresponding to the target snapshot.")
+    target_catalogue_properties_file = TypedAutoProperty[str](TypeShield(str),
+                doc = "Catalogue properties file corresponding to the target snapshot.")
     simulation_type = TypedAutoProperty[str](TypeShield(str),
                 doc = "Type of source simulation data.")
     redshift = TypedAutoProperty[float](TypeShield(float),
@@ -105,7 +120,9 @@ class SnapshotStatsDataset(Struct):
     """
     snapshot_filepath
 
-    catalogue_filepath
+    catalogue_membership_filepath
+
+    catalogue_properties_filepath
 
     redshift
 
@@ -140,6 +157,10 @@ class SnapshotStatsDataset(Struct):
 
     snapshot_filepath = TypedAutoProperty[str](TypeShield(str),
                 doc = "Filepath of snapshot file.")
+    catalogue_membership_filepath = TypedAutoProperty[str](TypeShield(str),
+                doc = "Filepath of catalogue file containing particle membership information.")
+    catalogue_properties_filepath = TypedAutoProperty[str](TypeShield(str),
+                doc = "Filepath of catalogue file containing halo properties.")
     catalogue_filepath = TypedAutoProperty[str](TypeShield(str),
                 doc = "Filepath of catalogue file.")
     redshift = TypedAutoProperty[float](TypeShield(float),
@@ -200,6 +221,9 @@ class SnapshotStatsDataset(Struct):
     def __str__(self):
         return f"""\
 redshift:                                {self.redshift}
+snapshot file:                           {self.snapshot_filepath}
+catalogue membership file:               {self.catalogue_membership_filepath}
+catalogue properties file:               {self.catalogue_properties_filepath}
 number of particles:                     {self.N_particles}
 number of particles in haloes:           {self.N_halo_particles}
 number of particles newley matched:      {self.N_particles_matched}
@@ -208,32 +232,209 @@ number of haloes:                        {self.N_haloes}
 number of top level haloes:              {self.N_haloes_top_level}
 total volume of particles in haloes:     {self.halo_particle_total_volume}
 total volume of particles newly matched: {self.halo_particle_total_volume}\
-""" + (f"""\
+""" + (f"""
 gas:
     number of particles:                     {self.N_particles_gas}
     number of particles in haloes:           {self.N_halo_particles_gas}
     number of particles newly matched:       {self.N_particles_matched_gas}
-    total volume of particles newly matched: {self.N_particles_matched_gas}\
-""" if self.N_particles_gas is not None        else "gas: -----------") + (f"""\
+    total volume of particles newly matched: {self.particles_matched_total_volume_gas}\
+""" if self.N_particles_gas is not None        else "gas: -----------") + (f"""
 stars:
     number of particles:                     {self.N_particles_star}
     number of particles in haloes:           {self.N_halo_particles_star}
     number of particles newly matched:       {self.N_particles_matched_star}
-    total volume of particles newly matched: {self.N_particles_matched_star}\
-""" if self.N_particles_star is not None       else "stars: ---------") + (f"""\
+    total volume of particles newly matched: {self.particles_matched_total_volume_star}\
+""" if self.N_particles_star is not None       else "stars: ---------") + (f"""
 black holes:
     number of particles:                     {self.N_particles_black_hole}
     number of particles in haloes:           {self.N_halo_particles_black_hole}
     number of particles newly matched:       {self.N_particles_matched_black_hole}
-    total volume of particles newly matched: {self.N_particles_matched_black_hole}\
-""" if self.N_particles_black_hole is not None else "black holes: ---") + (f"""\
+    total volume of particles newly matched: {self.particles_matched_total_volume_black_hole}\
+""" if self.N_particles_black_hole is not None else "black holes: ---") + (f"""
 dark mater:
     number of particles:                     {self.N_particles_dark_matter}
     number of particles in haloes:           {self.N_halo_particles_dark_matter}
     number of particles newly matched:       {self.N_particles_matched_dark_matter}
-    total volume of particles newly matched: {self.N_particles_matched_dark_matter}\
+    total volume of particles newly matched: {self.particles_matched_total_volume_matter}\
 """ if self.N_particles_dark_matter is not None else "dark mater: ---")
     
+    @staticmethod
+    def initialise_partial(snapshot: SnapshotBase, catalogue: CatalogueBase) -> "SnapshotStatsDataset":
+        data =  SnapshotStatsDataset()
+
+        data.snapshot_filepath = snapshot.filepath
+        data.catalogue_membership_filepath = catalogue.membership_filepath
+        data.catalogue_properties_filepath = catalogue.properties_filepath
+        data.redshift = catalogue.z
+        data.N_particles = sum([snapshot.number_of_particles(p) for p in ParticleType.get_all()])
+        for part_type in ParticleType.get_all():
+            setattr(data, f"N_particles_{part_type.name.replace(' ', '_')}", snapshot.number_of_particles(part_type))
+        data.N_haloes = len(catalogue)
+        data.N_halo_children = catalogue.number_of_children
+        data.N_halo_decendants = catalogue.number_of_decendants
+
+        Console.print_debug("1")
+
+        data.particle_total_volume = sum(
+            [
+                snapshot.get_volumes(p).to("Mpc**3").sum()
+                for p
+                in ParticleType.get_all()
+            ],
+            start = unyt_quantity(0.0, units = "Mpc**3")
+        )
+#        data.particle_total_volume = sum(
+#            [
+#                (snapshot.get_smoothing_lengths(p).to("Mpc")**3).sum()
+#                for p
+#                in ParticleType.get_all()
+#            ],
+#            start = unyt_quantity(0.0, units = "Mpc**3")
+#        ) * (np.pi * 4/3)
+
+        Console.print_debug("2")
+
+        data.N_haloes_top_level = int((catalogue.get_halo_parent_IDs() == -1).sum())
+
+        Console.print_debug("3")
+
+        data.N_halo_particles_gas = len(catalogue.get_particle_IDs(ParticleType.gas))
+        data.N_halo_particles_star = len(catalogue.get_particle_IDs(ParticleType.star))
+        data.N_halo_particles_black_hole = len(catalogue.get_particle_IDs(ParticleType.black_hole))
+        data.N_halo_particles_dark_matter = len(catalogue.get_particle_IDs(ParticleType.dark_matter))
+
+        Console.print_debug("4")
+
+        data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
+        data.halo_particle_total_volume = sum([ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_volumes(p).to("Mpc**3")).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3"))
+#        data.halo_particle_total_volume = sum([(ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
+
+        return data
+
+    @staticmethod
+    async def initialise_partial_async(snapshot: SnapshotBase, catalogue: CatalogueBase) -> "SnapshotStatsDataset":#TOSO:
+        data =  SnapshotStatsDataset()
+
+        data.snapshot_filepath = snapshot.filepath
+        data.catalogue_membership_filepath = catalogue.membership_filepath
+        data.catalogue_properties_filepath = catalogue.properties_filepath
+        data.redshift = catalogue.z
+        data.N_particles = sum([snapshot.number_of_particles(p) for p in ParticleType.get_all()])
+        for part_type in ParticleType.get_all():
+            setattr(data, f"N_particles_{part_type.name.replace(' ', '_')}", snapshot.number_of_particles(part_type))
+        data.N_haloes = len(catalogue)
+        data.N_halo_children = catalogue.number_of_children
+        data.N_halo_decendants = catalogue.number_of_decendants
+
+        # Async operation functions
+
+        async def calc__particle_total_volume():
+            data.particle_total_volume = sum(
+                [
+                    (smoothing_lengths.to("Mpc")**3).sum()
+                    for smoothing_lengths
+                    in await asyncio.gather(*[snapshot.get_smoothing_lengths_async(p) for p in ParticleType.get_all()])
+                ],
+                start = unyt_quantity(0.0, units = "Mpc**3")
+            ) * (np.pi * 4/3)
+
+        async def calc__N_haloes_top_level():
+            data.N_haloes_top_level = int((await catalogue.get_halo_parent_IDs_async() == -1).sum())
+
+        async def calc__N_halo_particles_of_type(part_type: ParticleType):
+            return len(await catalogue.get_particle_IDs_async(part_type))
+        async def calc__N_halo_particles():
+            (
+                data.N_halo_particles_gas,
+                data.N_halo_particles_star,
+                data.N_halo_particles_black_hole,
+                data.N_halo_particles_dark_matter,
+            ) = await asyncio.gather(
+                calc__N_halo_particles_of_type(ParticleType.gas),
+                calc__N_halo_particles_of_type(ParticleType.star),
+                calc__N_halo_particles_of_type(ParticleType.black_hole),
+                calc__N_halo_particles_of_type(ParticleType.dark_matter)
+            )
+
+        # Run all async functions
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as pool:
+            future = loop.run_in_executor(pool,
+                asyncio.gather,
+                calc__particle_total_volume(),
+                calc__N_haloes_top_level(),
+                calc__N_halo_particles()
+            )
+            while not future.done(): pass
+            future.result()
+
+        data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
+        data.halo_particle_total_volume = sum([(ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
+
+        return data
+
+    @staticmethod
+    def initialise_partial_alt(snapshot: SnapshotBase, catalogue: CatalogueBase) -> "SnapshotStatsDataset":
+        data =  SnapshotStatsDataset()
+
+        data.snapshot_filepath = snapshot.filepath
+        data.catalogue_membership_filepath = catalogue.membership_filepath
+        data.catalogue_properties_filepath = catalogue.properties_filepath
+        data.redshift = catalogue.z
+        data.N_particles = sum([snapshot.number_of_particles(p) for p in ParticleType.get_all()])
+        for part_type in ParticleType.get_all():
+            setattr(data, f"N_particles_{part_type.name.replace(' ', '_')}", snapshot.number_of_particles(part_type))
+        data.N_haloes = len(catalogue)
+        data.N_halo_children = catalogue.number_of_children
+        data.N_halo_decendants = catalogue.number_of_decendants
+
+        # Async operation functions
+
+        async def calc__particle_total_volume():
+            data.particle_total_volume = sum(
+                [
+                    (smoothing_lengths.to("Mpc")**3).sum()
+                    for smoothing_lengths
+                    in await asyncio.gather(*[snapshot.get_smoothing_lengths_async(p) for p in ParticleType.get_all()])
+                ],
+                start = unyt_quantity(0.0, units = "Mpc**3")
+            ) * (np.pi * 4/3)
+
+        async def calc__N_haloes_top_level():
+            data.N_haloes_top_level = int((await catalogue.get_halo_parent_IDs_async() == -1).sum())
+
+        async def calc__N_halo_particles_of_type(part_type: ParticleType):
+            return len(await catalogue.get_particle_IDs_async(part_type))
+        async def calc__N_halo_particles():
+            (
+                data.N_halo_particles_gas,
+                data.N_halo_particles_star,
+                data.N_halo_particles_black_hole,
+                data.N_halo_particles_dark_matter,
+            ) = await asyncio.gather(
+                calc__N_halo_particles_of_type(ParticleType.gas),
+                calc__N_halo_particles_of_type(ParticleType.star),
+                calc__N_halo_particles_of_type(ParticleType.black_hole),
+                calc__N_halo_particles_of_type(ParticleType.dark_matter)
+            )
+
+        # Run all async functions
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as pool:
+            future = loop.run_in_executor(pool,
+                asyncio.gather,
+                calc__particle_total_volume(),
+                calc__N_haloes_top_level(),
+                calc__N_halo_particles()
+            )
+            while not future.done(): pass
+            future.result()
+
+        data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
+        data.halo_particle_total_volume = sum([(ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
+
+        return data
+
 
 
 class ContraData(Struct):
@@ -269,13 +470,27 @@ class ContraData(Struct):
         elif self.header.simulation_type == "EAGLE":
             return SnapshotEAGLE(filepath)
         else:
-            raise NotImplementedError(f"\"ContraData.get_snapshot\" not implemented for source simulation type \"{self.header.simulation_type}\".")
+            raise NotImplementedError(f"\"ContraData._get_snapshot\" not implemented for source simulation type \"{self.header.simulation_type}\".")
     
     def get_target_snapshot(self) -> SnapshotBase:
-        return self._get_snapshot(self.header.target_file)
+        return self._get_snapshot(self.header.target_snapshot)
     
     def get_snapshot(self, stats: SnapshotStatsDataset) -> SnapshotBase:
         return self._get_snapshot(stats.snapshot_filepath)
+    
+    def _get_catalogue(self, membership_filepath: str, properties_filepath: str, snapshot: SnapshotBase) -> CatalogueBase:
+        if self.header.simulation_type == "SWIFT":
+            return CatalogueSOAP(membership_filepath, properties_filepath, snapshot)
+        elif self.header.simulation_type == "EAGLE":
+            return CatalogueSUBFIND(membership_filepath, properties_filepath, snapshot)
+        else:
+            raise NotImplementedError(f"\"ContraData._get_catalogue\" not implemented for source simulation type \"{self.header.simulation_type}\".")
+    
+    def get_target_catalogue(self) -> CatalogueBase:
+        return self._get_catalogue(self.header.target_catalogue_membership_file, self.header.target_catalogue_properties_file, self.get_target_snapshot())
+
+    def get_catalogue(self, stats: SnapshotStatsDataset) -> CatalogueBase:
+        return self._get_catalogue(stats.catalogue_membership_filepath, stats.catalogue_properties_filepath, self.get_snapshot(stats))
     
     @staticmethod
     def load(filepath: str) -> "ContraData":
@@ -325,7 +540,9 @@ class OutputWriter(object):
         d = self.__file.create_group("Header")
         d.attrs["Version"] = str(header.version)
         d.attrs["Date"] = datetime.datetime(year = header.date.year, month = header.date.month, day = header.date.day).timestamp()
-        d.attrs["Snapshot"] = header.target_file
+        d.attrs["SnapshotFilepath"] = header.target_snapshot
+        d.attrs["CatalogueMembershipFilepath"] = header.target_catalogue_membership_file
+        d.attrs["CataloguePropertiesFilepath"] = header.target_catalogue_properties_file
         d.attrs["SimulationType"] = header.simulation_type
         d.attrs["Redshift"] = header.redshift
         d.attrs["NumberSearchedSnapshots"] = header.N_searched_snapshots
@@ -352,7 +569,8 @@ class OutputWriter(object):
             raise IOError("File not open. Call open() first or use with statement.")
         d = self.__file["SnapshotStats"].create_group(str(index))
         d.attrs["SnapshotFilepath"] = stats.snapshot_filepath
-        d.attrs["CatalogueFilepath"] = stats.catalogue_filepath
+        d.attrs["CatalogueMembershipFilepath"] = stats.catalogue_membership_filepath
+        d.attrs["CataloguePropertiesFilepath"] = stats.catalogue_properties_filepath
         d.attrs["Redshift"] = stats.redshift
         d.attrs["NumberOfParticles"] = stats.N_particles
         d.attrs["NumberOfHaloes"] = stats.N_haloes
@@ -438,7 +656,9 @@ class OutputReader(object):
         s = HeaderDataset()
         s.version = VersionInfomation.from_string(self.__file["Header"].attrs["Version"])
         s.date = datetime.datetime.fromtimestamp((self.__file["Header"].attrs["Date"])).date()
-        s.target_file = str(self.__file["Header"].attrs["Snapshot"])
+        s.target_snapshot = str(self.__file["Header"].attrs["SnapshotFilepath"])
+        s.target_catalogue_membership_file = str(self.__file["Header"].attrs["CatalogueMembership"])
+        s.target_catalogue_properties_file = str(self.__file["Header"].attrs["CatalogueProperties"])
         s.simulation_type = str(self.__file["Header"].attrs["SimulationType"])
         s.redshift = float(self.__file["Header"].attrs["Redshift"])
         s.N_searched_snapshots = int(self.__file["Header"].attrs["NumberSearchedSnapshots"])
@@ -476,7 +696,8 @@ class OutputReader(object):
         s = SnapshotStatsDataset()
 
         s.snapshot_filepath = str(d.attrs["SnapshotFilepath"])
-        s.catalogue_filepath = str(d.attrs["CatalogueFilepath"])
+        s.catalogue_membership_filepath = str(d.attrs["CatalogueMembershipFilepath"])
+        s.catalogue_properties_filepath = str(d.attrs["CataloguePropertiesFilepath"])
         s.redshift = float(d.attrs["Redshift"])
         s.N_particles = int(d.attrs["NumberOfParticles"])
         s.N_haloes = int(d.attrs["NumberOfHaloes"])

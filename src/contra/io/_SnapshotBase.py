@@ -91,6 +91,9 @@ class SnapshotBase(ABC):
     @abstractmethod
     def _get_masses(self, particle_type: ParticleType) -> unyt_array:
         raise NotImplementedError("Attempted to call an abstract method.")
+    
+    def get_volumes(self, particle_type: ParticleType) -> unyt_array:
+        return self.get_smoothing_lengths(particle_type)**3 * (np.pi * (4/3))
 
     @abstractmethod
     def get_black_hole_subgrid_masses(self) -> unyt_array:

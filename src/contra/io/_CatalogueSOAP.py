@@ -43,27 +43,31 @@ class CatalogueSOAP(CatalogueBase):
         self.__halo_ids = self.__halo_data_file["VR/ID"][:]
         self.__halo_parent_ids = self.__halo_data_file["VR/ParentHaloID"][:]
         self.__halo_top_most_parent_ids = self.__halo_data_file["VR/HostHaloID"][:]
+        self.__halo_top_most_parent_ids[self.__halo_top_most_parent_ids == -1] = self.__halo_ids[self.__halo_top_most_parent_ids == -1]
 
         assert (~(np.isin(self.__halo_parent_ids[self.__halo_parent_ids >= 0], self.__halo_ids))).sum() == 0
         assert (~(np.isin(self.__halo_top_most_parent_ids[self.__halo_top_most_parent_ids >= 0], self.__halo_ids))).sum() == 0
 
         # Convert halo IDs to indexes (SOAP membership info is stored as indexes)
-        self.__halo_indexes = np.arange(len(self.__halo_ids), dtype = int)
-        self.__halo_parent_indexes = np.empty_like(self.__halo_indexes, dtype = int)
-        self.__halo_top_most_parent_indexes = np.empty_like(self.__halo_indexes, dtype = int)
-#        for id, index in zip(self.__halo_ids, self.__halo_indexes):
-#            Console.print_debug(f"\r    {index + 1} / {len(self.__halo_ids)}", end = "                ")
-#            self.__halo_parent_indexes[self.__halo_parent_ids == id] = index
-#            self.__halo_top_most_parent_indexes[self.__halo_top_most_parent_ids == id] = index
-        sorted_halo_ids_order = np.argsort(self.__halo_ids)
-        self.__halo_parent_indexes = sorted_halo_ids_order[np.searchsorted(self.__halo_ids, self.__halo_parent_ids, sorter = sorted_halo_ids_order)]
-        self.__halo_top_most_parent_indexes = sorted_halo_ids_order[np.searchsorted(self.__halo_ids, self.__halo_top_most_parent_ids, sorter = sorted_halo_ids_order)]
+        self.__halo_indexes = self.__halo_ids - 1 # np.arange(len(self.__halo_ids), dtype = int)
+        self.__halo_parent_indexes = np.where(self.__halo_parent_ids != -1, self.__halo_parent_ids - 1, -1)
+        self.__halo_top_most_parent_indexes = self.__halo_top_most_parent_ids - 1
 
-        assert (~(self.__halo_parent_indexes >= 0)).sum() == 0
-        assert (~(self.__halo_top_most_parent_indexes >= 0)).sum() == 0
+#        self.__halo_parent_indexes = np.empty_like(self.__halo_indexes, dtype = int)
+#        self.__halo_top_most_parent_indexes = np.empty_like(self.__halo_indexes, dtype = int)
+#        sorted_halo_ids_order = np.argsort(self.__halo_ids)
+#        self.__halo_parent_indexes = sorted_halo_ids_order[np.searchsorted(self.__halo_ids, self.__halo_parent_ids, sorter = sorted_halo_ids_order)]
+#        print((self.__halo_parent_indexes != self.__halo_parent_ids).sum())
+#        print(self.__halo_parent_indexes.shape, self.__halo_parent_ids.shape)
+#        print((self.__halo_parent_indexes != self.__halo_parent_ids - 1).sum())
+#        exit()
+#        self.__halo_top_most_parent_indexes = sorted_halo_ids_order[np.searchsorted(self.__halo_ids, self.__halo_top_most_parent_ids, sorter = sorted_halo_ids_order)]
 
-        assert (~(np.isin(self.__halo_parent_indexes, self.__halo_indexes))).sum() == 0
-        assert (~(np.isin(self.__halo_top_most_parent_indexes, self.__halo_indexes))).sum() == 0
+#        assert (self.__halo_parent_indexes < 0).sum() == 0
+        assert (self.__halo_top_most_parent_indexes < 0).sum() == 0
+
+        assert (~np.isin(self.__halo_parent_indexes[self.__halo_parent_indexes != -1], self.__halo_indexes)).sum() == 0
+        assert (~np.isin(self.__halo_top_most_parent_indexes, self.__halo_indexes)).sum() == 0
 
         # Grab both index fields at the same time (reduces redundant IO)
         all_indexes = { part_type : self.__membership_file[part_type.common_hdf5_name]["GroupNr_all"][:] for part_type in ParticleType.get_all() }
