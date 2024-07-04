@@ -76,6 +76,9 @@ class SnapshotSWIFT(SnapshotBase):
 
     def _get_sfr(self, particle_type: ParticleType) -> unyt_array:
         return particle_type.get_SWIFT_dataset(self.__file_object).star_formation_rates
+
+    def _get_metalicities(self, particle_type: ParticleType) -> unyt_array:
+        return particle_type.get_SWIFT_dataset(self.__file_object).metal_mass_fraction
     
     @staticmethod
     def generate_filepaths(

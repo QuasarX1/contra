@@ -91,9 +91,6 @@ class SnapshotBase(ABC):
     @abstractmethod
     def _get_masses(self, particle_type: ParticleType) -> unyt_array:
         raise NotImplementedError("Attempted to call an abstract method.")
-    
-    def get_volumes(self, particle_type: ParticleType) -> unyt_array:
-        return self.get_smoothing_lengths(particle_type)**3 * (np.pi * (4/3))
 
     @abstractmethod
     def get_black_hole_subgrid_masses(self) -> unyt_array:
@@ -117,6 +114,17 @@ class SnapshotBase(ABC):
         return self._get_sfr(particle_type)
     @abstractmethod
     def _get_sfr(self, particle_type: ParticleType) -> unyt_array:
+        raise NotImplementedError("Attempted to call an abstract method.")
+    
+    def get_volumes(self, particle_type: ParticleType) -> unyt_array:
+        return self.get_smoothing_lengths(particle_type)**3 * (np.pi * (4/3))
+
+    def get_metalicities(self, particle_type: ParticleType) -> unyt_array:
+        if particle_type != ParticleType.gas and particle_type != ParticleType.star:
+            raise ValueError("get_metalicities is not supported for particle types other than gas and star.")
+        return self._get_metalicities(particle_type)
+    @abstractmethod
+    def _get_metalicities(self, particle_type: ParticleType) -> unyt_array:
         raise NotImplementedError("Attempted to call an abstract method.")
 
     # async versions
@@ -160,3 +168,8 @@ class SnapshotBase(ABC):
         with ThreadPoolExecutor() as pool:
             return await asyncio.get_running_loop().run_in_executor(pool, self.get_sfr, particle_type)
 #        return self.get_sfr(particle_type)
+
+    async def get_metalicities_async(self, particle_type: ParticleType) -> Awaitable[unyt_array]:
+        with ThreadPoolExecutor() as pool:
+            return await asyncio.get_running_loop().run_in_executor(pool, self.get_metalicities, particle_type)
+#        return self.get_metalicities(particle_type)
