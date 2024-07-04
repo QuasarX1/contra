@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: None
 import datetime
-from typing import Union, Collection, List, Dict
+from typing import Any, Union, Collection, List, Dict
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from functools import singledispatchmethod
 
 import numpy as np
 import h5py as h5
@@ -427,11 +428,16 @@ class ContraData(Struct):
     To read a file, call load() and pass the filepath.
     """
 
-    header = TypedAutoProperty[HeaderDataset](TypeShield(HeaderDataset),
+    def __init__(self, *args, **kwargs) -> None:
+        self.__target_snapshot: Union[SnapshotBase, None] = None
+        self.__target_catalogue: Union[CatalogueBase, None] = None
+        super().__init__(*args, **kwargs)
+
+    header: HeaderDataset = TypedAutoProperty[HeaderDataset](TypeShield(HeaderDataset),
                 doc = "Header. Data about the Contra run and output file.")
-    data = TypedAutoProperty[Dict[ParticleType, ParticleTypeDataset]](TypeShield(dict),#TODO: dict nested shield? (not cast!!!)
+    data: Dict[ParticleType, ParticleTypeDataset] = TypedAutoProperty[Dict[ParticleType, ParticleTypeDataset]](TypeShield(dict),#TODO: dict nested shield? (not cast!!!)
                 doc = "Datasets by particle type.")
-    snapshot_search_stats = NullableTypedAutoProperty[List[SnapshotStatsDataset]](NestedTypeShield(list, SnapshotStatsDataset),
+    snapshot_search_stats: Union[List[SnapshotStatsDataset], None] = NullableTypedAutoProperty[List[SnapshotStatsDataset]](NestedTypeShield(list, SnapshotStatsDataset),
                 doc = "Search stats for each searched snapshot.")
 
     @property
@@ -456,8 +462,10 @@ class ContraData(Struct):
             raise NotImplementedError(f"\"ContraData._get_snapshot\" not implemented for source simulation type \"{self.header.simulation_type}\".")
     
     def get_target_snapshot(self) -> SnapshotBase:
-        return self._get_snapshot(self.header.target_snapshot)
-    
+        if self.__target_snapshot is None:
+            self.__target_snapshot =  self._get_snapshot(self.header.target_snapshot)
+        return self.__target_snapshot
+
     def get_snapshot(self, stats: SnapshotStatsDataset) -> SnapshotBase:
         return self._get_snapshot(stats.snapshot_filepath)
     
@@ -470,10 +478,78 @@ class ContraData(Struct):
             raise NotImplementedError(f"\"ContraData._get_catalogue\" not implemented for source simulation type \"{self.header.simulation_type}\".")
     
     def get_target_catalogue(self) -> CatalogueBase:
-        return self._get_catalogue(self.header.target_catalogue_membership_file, self.header.target_catalogue_properties_file, self.get_target_snapshot())
+        if self.__target_catalogue is None:
+            self.__target_catalogue = self._get_catalogue(self.header.target_catalogue_membership_file, self.header.target_catalogue_properties_file, self.get_target_snapshot())
+        return self.__target_catalogue
 
     def get_catalogue(self, stats: SnapshotStatsDataset) -> CatalogueBase:
         return self._get_catalogue(stats.catalogue_membership_filepath, stats.catalogue_properties_filepath, self.get_snapshot(stats))
+
+    @singledispatchmethod
+    def get_matched_particles_mask(self, redshift: Any, part_type: ParticleType):
+        """
+        Creates a numpy mask array for the target snapshot data (for the requested particle type)
+        that selects particles last found in a halo at the specified redshift.
+        """
+        try:
+            return self.get_matched_particles_mask(float(redshift), part_type)
+        except:
+            raise TypeError(f"Invalid argument type {type(redshift)} for first parameter of ContraData.get_matched_particles_mask")
+    @get_matched_particles_mask.register(float)
+    def _(self, redshift: float, part_type: ParticleType):
+        if part_type not in self.data:
+            raise KeyError(f"No search data avalible for {part_type.name} particles.")
+        return self.data[part_type].redshifts == redshift
+    @get_matched_particles_mask.register(SnapshotStatsDataset)
+    def _(self, stats: SnapshotStatsDataset, part_type: ParticleType):
+        return self.get_matched_particles_mask(stats.redshift, part_type)
+    @get_matched_particles_mask.register(SnapshotBase)
+    def _(self, snapshot: SnapshotBase, part_type: ParticleType):
+        return self.get_matched_particles_mask(snapshot.redshift, part_type)
+    @get_matched_particles_mask.register(CatalogueBase)
+    def _(self, catalogue: CatalogueBase, part_type: ParticleType):
+        return self.get_matched_particles_mask(catalogue.redshift, part_type)
+
+    @singledispatchmethod
+    def get_snapshot_indexes_of_matched_particles(self, *args, **kwargs):
+        """
+        Get a numpy array of indexes to the specified snapshot's specified particle type data that
+        returns particle data for the particles last found in haloes at that snapshot's redshift.
+
+        Call signitures:
+
+                                             part_type (ParticleType)
+
+            stats (SnapshotStatsDataset),    part_type (ParticleType)
+
+            snapshot (SnapshotBase),         part_type (ParticleType)
+
+            catalogue (CatalogueBase),       part_type (ParticleType)
+        """
+        if len(args) > 0:
+            raise TypeError(f"Invalid argument type {type(args[0])} for first parameter of ContraData.get_snapshot_indexes_of_matched_particles")
+        else:
+            RuntimeError("This should be impossible! Please report!")
+    @get_snapshot_indexes_of_matched_particles.register(ParticleType)
+    def _(self, part_type: ParticleType):
+        if part_type not in self.data:
+            raise KeyError(f"No search data avalible for {part_type.name} particles.")
+        target_snap_mask = self.get_matched_particles_mask(self.get_target_snapshot().redshift, part_type)
+        return np.where(target_snap_mask)[0]
+    @get_snapshot_indexes_of_matched_particles.register(SnapshotStatsDataset)
+    def _(self, stats: SnapshotStatsDataset, part_type: ParticleType):
+        return self.get_snapshot_indexes_of_matched_particles(self.get_snapshot(stats), part_type)
+    @get_snapshot_indexes_of_matched_particles.register(SnapshotBase)
+    def _(self, snapshot: SnapshotBase, part_type: ParticleType):
+        if part_type not in self.data:
+            raise KeyError(f"No search data avalible for {part_type.name} particles.")
+        target_snap_mask = self.get_matched_particles_mask(snapshot.redshift, part_type)
+        target_snap_ids = self.get_target_snapshot().get_IDs(part_type)[target_snap_mask]
+        sorted_target_snap_ids_indexes = np.argsort(target_snap_ids)
+        return np.searchsorted(target_snap_ids, snapshot.get_IDs(part_type), sorter = sorted_target_snap_ids_indexes)[np.argsort(sorted_target_snap_ids_indexes)]
+    @get_snapshot_indexes_of_matched_particles.register(CatalogueBase)
+    def _(self, catalogue: CatalogueBase, part_type: ParticleType):
+        return self.get_snapshot_indexes_of_matched_particles(catalogue.snapshot, part_type)
     
     @staticmethod
     def load(filepath: str) -> "ContraData":
@@ -640,8 +716,8 @@ class OutputReader(object):
         s.version = VersionInfomation.from_string(self.__file["Header"].attrs["Version"])
         s.date = datetime.datetime.fromtimestamp((self.__file["Header"].attrs["Date"])).date()
         s.target_snapshot = str(self.__file["Header"].attrs["SnapshotFilepath"])
-        s.target_catalogue_membership_file = str(self.__file["Header"].attrs["CatalogueMembership"])
-        s.target_catalogue_properties_file = str(self.__file["Header"].attrs["CatalogueProperties"])
+        s.target_catalogue_membership_file = str(self.__file["Header"].attrs["CatalogueMembershipFilepath"])
+        s.target_catalogue_properties_file = str(self.__file["Header"].attrs["CataloguePropertiesFilepath"])
         s.simulation_type = str(self.__file["Header"].attrs["SimulationType"])
         s.redshift = float(self.__file["Header"].attrs["Redshift"])
         s.N_searched_snapshots = int(self.__file["Header"].attrs["NumberSearchedSnapshots"])
