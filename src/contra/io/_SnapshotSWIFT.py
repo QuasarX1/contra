@@ -12,6 +12,7 @@ import numpy as np
 from unyt import unyt_array
 import swiftsimio as sw
 from scipy.spatial import KDTree
+from QuasarCode import Console
 
 class SnapshotSWIFT(SnapshotBase):
     """
@@ -50,11 +51,24 @@ class SnapshotSWIFT(SnapshotBase):
         if particle_type == ParticleType.dark_matter:
             N_NABOURS = 32#TODO: move to settings and generalise with staticmethod on base class
             if self.__cached_dm_smoothing_lengths is None:
+                n_part = self.number_of_particles(ParticleType.dark_matter)
                 dm_part_positions = self.get_positions(ParticleType.dark_matter)
                 unit = dm_part_positions.units
                 dm_part_positions = dm_part_positions.value
                 tree = KDTree(dm_part_positions)
-                self.__cached_dm_smoothing_lengths = unyt_array(tree.query(dm_part_positions, k = N_NABOURS)[0][:, N_NABOURS - 1], units = unit)
+                chunk_size = 10**8#TODO: move this to settings
+                if n_part <= chunk_size:
+                    # This causes a memory error
+                    try:
+                        self.__cached_dm_smoothing_lengths = unyt_array(tree.query(dm_part_positions, k = N_NABOURS)[0][:, N_NABOURS - 1], units = unit)
+                    except MemoryError as e:
+                        Console.print_warning("Not enough memory avalible to calculate particle smoothing lengths.\nDecrease the chunk size setting.")
+                        raise e
+                else:
+                    self.__cached_dm_smoothing_lengths = unyt_array(np.zeros(n_part), units = unit)
+                    for i in range(0, n_part, chunk_size):
+                        selected_slice = slice(i, max(i + chunk_size, n_part))
+                        self.__cached_dm_smoothing_lengths[selected_slice] = unyt_array(tree.query(dm_part_positions[selected_slice], k = N_NABOURS)[0][:, N_NABOURS - 1], units = unit)
             return self.__cached_dm_smoothing_lengths
         else:
             return particle_type.get_SWIFT_dataset(self.__file_object).smoothing_lengths
