@@ -571,7 +571,7 @@ async def __main(
                 output_file.write_snapshot_stats_dataset(snap_index, snap_stats)
 
             if Settings.verbose or Settings.debug:
-                (Console.print_info if Settings.verbose else Console.print_debug)(f"    Stats for snapshot {snap_index + 1}:\n        {str(snap_stats).replace('\n', '\n        ')}")
+                (Console.print_info if Settings.verbose else Console.print_debug)(f"    Stats for snapshot {snap_index + 1}:\n        " + str(snap_stats).replace("\n", "\n        "))
 
     Console.print_info("Reverse search complete.")
     Console.print_info("Writing final output.")
