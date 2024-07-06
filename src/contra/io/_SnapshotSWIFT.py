@@ -9,7 +9,7 @@ import os
 import re
 
 import numpy as np
-from unyt import unyt_array
+from unyt import unyt_array, unyt_quantity
 import swiftsimio as sw
 from scipy.spatial import KDTree
 from QuasarCode import Console
@@ -31,11 +31,12 @@ class SnapshotSWIFT(SnapshotBase):
 
         self.__cached_dm_smoothing_lengths: Union[unyt_array, None] = None
 
-        super().__init__(#TODO: check retreval of info
+        super().__init__(
             filepath = filepath,
             redshift = float(self.__file_object.metadata.header["Redshift"][0]),
             hubble_param = float(self.__file_object.metadata.cosmology["h"][0]),
-            expansion_factor = float(self.__file_object.metadata.header["Scale-factor"][0])
+            expansion_factor = float(self.__file_object.metadata.header["Scale-factor"][0]),
+            box_size = self.__file_object.metadata.boxsize
         )
 
     def _get_number_of_particles(self) -> Dict[ParticleType, int]:
@@ -56,7 +57,7 @@ class SnapshotSWIFT(SnapshotBase):
                 unit = dm_part_positions.units
                 dm_part_positions = dm_part_positions.value
                 tree = KDTree(dm_part_positions)
-                chunk_size = 10**8#TODO: move this to settings
+                chunk_size = 10**4#TODO: move this to settings
                 if n_part <= chunk_size:
                     # This causes a memory error
                     try:
@@ -127,7 +128,7 @@ class SnapshotSWIFT(SnapshotBase):
                 str
             ],
             ...
-         ]:
+            ]:
         """
         Given the directory containing SWIFT snapshots, identify the file name information for the catalogue.
         """
@@ -226,7 +227,7 @@ class SnapshotSWIFT(SnapshotBase):
         if len(valid_indexes) == 0:
             raise FileNotFoundError("No snapshots match the partial specification.")
         if len(valid_indexes) > 1:
-            raise IOError("Partial specification to general; more than one valid snapshot basename detected.")
+            raise IOError("Partial specification too general; more than one valid snapshot basename detected.")
 
         # Retain only correct set
         scraped_info = scraped_info[valid_indexes[0]]
@@ -262,5 +263,5 @@ class SnapshotSWIFT(SnapshotBase):
     @staticmethod
     def get_snapshot_order(snapshot_file_info: List[str], reverse = False) -> List[str]:
         snapshot_file_info = list(snapshot_file_info)
-        snapshot_file_info.sort(key = lambda v: int(v), reverse = reverse)
+        snapshot_file_info.sort(key = int, reverse = reverse)
         return snapshot_file_info

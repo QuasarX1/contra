@@ -4,12 +4,12 @@
 from .._ParticleType import ParticleType
 
 from abc import ABC, abstractmethod
-from typing import Awaitable, Union, Dict
+from typing import Awaitable, Union, List, Tuple, Dict
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 import numpy as np
-from unyt import unyt_array
+from unyt import unyt_array, unyt_quantity
 
 class SnapshotBase(ABC):
     """
@@ -21,12 +21,14 @@ class SnapshotBase(ABC):
                     filepath: str,
                     redshift: float,
                     hubble_param: float,
-                    expansion_factor: float
+                    expansion_factor: float,
+                    box_size: float
                 ) -> None:
         self.__filepath: str = filepath
         self.__redshift: float = redshift
         self.__hubble_param: float = hubble_param
         self.__expansion_factor: float = expansion_factor
+        self.__box_size: unyt_array = box_size
 
         self.__n_parts: Dict[ParticleType, int] = self._get_number_of_particles()
 
@@ -54,6 +56,10 @@ class SnapshotBase(ABC):
     @property
     def a(self) -> float:
         return self.expansion_factor
+
+    @property
+    def box_size(self) -> float:
+        return self.__box_size
 
     def remove_h_factor(self, data: np.ndarray) -> np.ndarray:
         return data / self.h
@@ -173,3 +179,51 @@ class SnapshotBase(ABC):
         with ThreadPoolExecutor() as pool:
             return await asyncio.get_running_loop().run_in_executor(pool, self.get_metalicities, particle_type)
 #        return self.get_metalicities(particle_type)
+
+    @staticmethod
+    @abstractmethod
+    def generate_filepaths(
+       *snapshot_number_strings: str,
+        directory: str,
+        basename: str,
+        file_extension: str = "hdf5",
+        parallel_ranks: Union[List[int], None] = None
+    ) -> Dict[
+            str,
+            Union[str, Dict[int, str]]
+         ]:
+        raise NotImplementedError("Attempted to call an abstract method.")
+
+    @staticmethod
+    @abstractmethod
+    def scrape_filepaths(
+        catalogue_directory: str
+    ) -> Tuple[
+            Tuple[
+                str,
+                Tuple[str, ...],
+                Union[Tuple[int, ...], None],
+                str
+            ],
+            ...
+         ]:
+        raise NotImplementedError("Attempted to call an abstract method.")
+
+    @staticmethod
+    @abstractmethod
+    def generate_filepaths_from_partial_info(
+        directory: str,
+        basename: Union[str, None] = None,
+        snapshot_number_strings: Union[List[str], None] = None,
+        file_extension: Union[str, None] = None,
+        parallel_ranks: Union[List[int], None] = None
+    ) -> Dict[
+            str,
+            Union[str, Dict[int, str]]
+         ]:
+        raise NotImplementedError("Attempted to call an abstract method.")
+
+    @staticmethod
+    @abstractmethod
+    def get_snapshot_order(snapshot_file_info: List[str], reverse = False) -> List[str]:
+        raise NotImplementedError("Attempted to call an abstract method.")

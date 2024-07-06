@@ -163,12 +163,12 @@ def main():
             ),
             ScriptWrapper.OptionalParam[str | None](
                 name = "snapshot-basename",
-                description = "Prefix to apply to all snapshot file numbers.\nMay be omitted if the snapshot directory contains only one set of snapshots."
+                description = "Prefix to apply to all snapshot file numbers.\nMay be omitted if the snapshot directory contains only one set of snapshots.\nNot supported when using EAGLE data",
+                conflicts = ["EAGLE"]
             ),
             ScriptWrapper.OptionalParam[str | None](
                 name = "catalogue",
                 sets_param = "catalogue_directory",
-                default_value = ".",
                 description = "Where to search for catalogue files.\nDefaults to the same directory as the snapshots."
             ),
             ScriptWrapper.OptionalParam[str | None](
@@ -182,7 +182,8 @@ def main():
             ScriptWrapper.Flag(
                 name = "EAGLE",
                 sets_param = "is_EAGLE",
-                description = "Running on EAGLE data."
+                description = "Running on EAGLE data.",
+                conflicts = ["snapshot-basename"]
             ),
             ScriptWrapper.Flag(
                 name = "SWIFT",
@@ -336,7 +337,10 @@ async def __main(
             search_snapshot_file_order.append(target_snapshot)
         search_snapshot_file_order.extend(search_snapshots)
 
-    Console.print_verbose_info("Got the following snapshot files:\n    " + "\n    ".join([snapshot_files[key] for key in search_snapshot_file_order]))
+    if isinstance(snapshot_files[search_snapshot_file_order[0]], str):
+        Console.print_verbose_info("Got the following snapshot files:\n    " + "\n    ".join([snapshot_files[key] for key in search_snapshot_file_order]))
+    else:
+        Console.print_verbose_info("Got the following snapshot files:\n    " + "\n    ".join([(snapshot_files[key][min(snapshot_files[key].keys())] + f" ({min(snapshot_files[key].keys())} -> {max(snapshot_files[key].keys())})") for key in search_snapshot_file_order]))
 
     # Get filepath info for catalogue files
 
@@ -351,7 +355,16 @@ async def __main(
 #        catalogue_files = CatalogueSUBFIND.generate_filepaths_from_partial_info(catalogue_directory, catalogue_membership_basename, catalogue_properties_basename, snapshot_number_strings = search_snapshot_file_order)
     catalogue_files = new_catalogue_type.generate_filepaths_from_partial_info(catalogue_directory, catalogue_membership_basename, catalogue_properties_basename, snapshot_number_strings = search_snapshot_file_order)
 
-    Console.print_verbose_info("Got the following catalogue files:\n    " + "\n    ".join([catalogue_files[key][0] for key in search_snapshot_file_order]))
+    if isinstance(catalogue_files[search_snapshot_file_order[0]][0], str):
+        Console.print_verbose_info("Got the following catalogue membership files:\n    " + "\n    ".join([catalogue_files[key][0] for key in search_snapshot_file_order]))
+    else:
+        Console.print_verbose_info("Got the following catalogue membership files:\n    " + "\n    ".join([(catalogue_files[key][0][0] + f" ({0} -> {len(catalogue_files[key][0]) - 1})") for key in search_snapshot_file_order]))
+
+    if isinstance(catalogue_files[search_snapshot_file_order[0]][1], str):
+        Console.print_verbose_info("Got the following catalogue properties files:\n    " + "\n    ".join([catalogue_files[key][1] for key in search_snapshot_file_order]))
+    else:
+        Console.print_verbose_info("Got the following catalogue properties files:\n    " + "\n    ".join([(catalogue_files[key][1][0] + f" ({0} -> {len(catalogue_files[key][1]) - 1})") for key in search_snapshot_file_order]))
+
 
     # Ensure that the path is an absolute path
     output_filepath = os.path.abspath(output_filepath)
@@ -367,17 +380,17 @@ async def __main(
 
 
 
-    Console.print_info("Loading snapshot and catalogue files...", end = "")
+    Console.print_info("Loading snapshot and catalogue files...", end = "\n" if (is_EAGLE and Settings.debug) else "")
     timer_start = datetime.datetime.now()
 
     # Load target snapshot and catalogue
-    target_snap = new_snapshot_type(snapshot_files[target_snapshot])
+    target_snap = new_snapshot_type(snapshot_files[target_snapshot] if isinstance(snapshot_files[target_snapshot], str) else snapshot_files[target_snapshot][min(snapshot_files[target_snapshot].keys())])
     target_cat = new_catalogue_type(*catalogue_files[target_snapshot], target_snap)
 
     snapshots: List[SnapshotBase] = []
     catalogues: List[CatalogueBase] = []
     for snap_key in search_snapshot_file_order:
-        snapshots.append(new_snapshot_type(snapshot_files[snap_key]) if snap_key != target_snapshot else target_snap)
+        snapshots.append(new_snapshot_type((snapshot_files[snap_key]) if isinstance(snapshot_files[snap_key], str) else snapshot_files[snap_key][min(snapshot_files[snap_key].keys())]) if snap_key != target_snapshot else target_snap)
         catalogues.append(new_catalogue_type(*catalogue_files[snap_key], snapshots[-1]) if snap_key != target_snapshot else target_cat)
 #        if is_SWIFT:
 #            catalogues.append(CatalogueSOAP(*catalogue_files[snap_key], snapshots[-1]))
@@ -439,9 +452,10 @@ async def __main(
     for snap_index, (snap, cat, L_star_mass) in enumerate(zip(snapshots, catalogues, L_star_mass_by_snapshot)):
         Console.print_info(f"Doing snapshot {snap_index + 1}/{N_snapshots} (z={snap.z})")
 
-        Console.print_verbose_info("    Calculating initial statistics")
-
         if do_stats:
+
+            Console.print_verbose_info("    Calculating initial statistics")
+
             # Compute initial statistics for the snapshot
             snap_stats = SnapshotStatsDataset.initialise_partial(snap, cat)
 #            snap_stats = SnapshotStatsDataset()

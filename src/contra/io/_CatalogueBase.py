@@ -5,7 +5,7 @@ from .._ParticleType import ParticleType
 from ._SnapshotBase import SnapshotBase
 
 from abc import ABC, abstractmethod
-from typing import Awaitable, Union, Tuple, Dict
+from typing import Awaitable, Union, List, Tuple, Dict
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
@@ -131,7 +131,6 @@ class CatalogueBase(ABC):
     def get_particle_IDs(self, particle_type: ParticleType, include_unbound: bool = True) -> np.ndarray:
         """
         Get a list of particle IDs that are included in the catalogue.
-        Optionally, specify a particle type to get only those particles.
         Set 'include_unbound' to False to retrive only bound particles.
         """
         raise NotImplementedError("Attempted to call an abstract method.")
@@ -183,7 +182,7 @@ class CatalogueBase(ABC):
 #        return data[self.__snapshot_to_halo_particle_sorting_indexes[particle_type]]
 
     @abstractmethod
-    def _get_highrarchy_IDs(self) -> Tuple[np.ndarray, np.ndarray]:
+    def _get_highrarchy_IDs(self) -> Tuple[np.ndarray, np.ndarray]:#TODO: is this what is so slow?????
         """
         Return two signed integer arrays: ID of each halo and parent ID of each halo.
         A halo with no parent has a parent ID of -1.
@@ -196,22 +195,24 @@ class CatalogueBase(ABC):
         n_direct_children = np.zeros_like(parent_ids, dtype = int)
         n_total_children = np.zeros_like(parent_ids, dtype = int)
 
-        null_index = -len(halo_ids)
-        parent_indexes = np.empty_like(parent_ids, dtype = int)
-        parent_indexes[parent_ids == -1] = null_index
-        for index, id in enumerate(halo_ids):
-            parent_indexes[parent_ids == id] = index
+        if (parent_ids != -1).sum() > 0 and (halo_ids != parent_ids).sum() > 0:
 
-        for i in range(len(parent_indexes)):
-            if parent_indexes[i] == null_index:
-                continue
-            parent_index = parent_indexes[i]
-            n_direct_children[parent_index] += 1 # Only increment direct children once for a given halo - each halo can be a direct child of only one halo
-            while True:
-                n_total_children[parent_index] += 1
-                parent_index = parent_indexes[parent_index]
-                if parent_index == null_index:
-                    break
+            null_index = -len(halo_ids)
+            parent_indexes = np.empty_like(parent_ids, dtype = int)
+            parent_indexes[parent_ids == -1] = null_index
+            for index, id in enumerate(halo_ids):#TODO: looping over haloes in this way too slow?
+                parent_indexes[parent_ids == id] = index
+
+            for i in range(len(parent_indexes)):
+                if parent_indexes[i] == null_index:
+                    continue
+                parent_index = parent_indexes[i]
+                n_direct_children[parent_index] += 1 # Only increment direct children once for a given halo - each halo can be a direct child of only one halo
+                while True:
+                    n_total_children[parent_index] += 1
+                    parent_index = parent_indexes[parent_index]
+                    if parent_index == null_index:
+                        break
 
         return n_direct_children, n_total_children
 
@@ -276,3 +277,53 @@ class CatalogueBase(ABC):
     async def get_halo_masses_async(self, particle_type: Union[ParticleType, None] = None) -> Awaitable[unyt_array]:
         with ThreadPoolExecutor() as pool:
             return await asyncio.get_running_loop().run_in_executor(pool, self.get_halo_masses, particle_type)
+    
+    @staticmethod
+    @abstractmethod
+    def generate_filepaths(
+       *snapshot_number_strings: str,
+        directory: str,
+        membership_basename: str,
+        properties_basename: str,
+        file_extension: str = "hdf5",
+        parallel_ranks: Union[List[int], None] = None
+    ) -> Dict[
+            str,
+            Tuple[
+                Union[str, Tuple[str, ...]],
+                Union[str, Tuple[str, ...]]
+            ]
+         ]:
+        raise NotImplementedError("Attempted to call an abstract method.")
+
+    @staticmethod
+    @abstractmethod
+    def scrape_filepaths(
+        directory: str,
+        ignore_basenames: Union[list[str], None] = None
+    ) -> Tuple[
+            Tuple[str, ...],
+            str,
+            str,
+            str,
+            Union[Tuple[int, ...], None]
+         ]:
+        raise NotImplementedError("Attempted to call an abstract method.")
+    
+    @staticmethod
+    @abstractmethod
+    def generate_filepaths_from_partial_info(
+        directory: str,
+        membership_basename: Union[str, None] = None,
+        properties_basename: Union[str, None] = None,
+        snapshot_number_strings: Union[List[str], None] = None,
+        file_extension: Union[str, None] = None,
+        parallel_ranks: Union[List[int], None] = None
+    ) -> Dict[
+            str,
+            Tuple[
+                Union[str, Tuple[str, ...]],
+                Union[str, Tuple[str, ...]]
+            ]
+         ]:
+        raise NotImplementedError("Attempted to call an abstract method.")

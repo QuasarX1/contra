@@ -106,6 +106,10 @@ class CatalogueSOAP(CatalogueBase):
             snapshot = snapshot
         )
 
+    @property
+    def snapshot(self) -> SnapshotSWIFT:
+        return super().snapshot
+
     def get_number_of_haloes(self, particle_type: Union[ParticleType, None] = None) -> int:
         """
         Return the number of haloes in the catalogue.
