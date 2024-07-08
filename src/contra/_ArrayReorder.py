@@ -275,9 +275,28 @@ class ArrayMapping(object):
         #                           | <---------------- Select matched elements ---------------------> || apply mapping |
         self.__input_data_reorder = source_order_sorted[forwards_membership_filter[source_order_sorted]][placement_order]
 
+        self.__input_mask = forwards_membership_filter
+        self.__input_length = len(forwards_membership_filter)
+
         self.__output_mask = backwards_membership_filter
         self.__result_is_exact = backwards_membership_filter.sum() == len(backwards_membership_filter)
         self.__output_length = len(backwards_membership_filter)
+
+    @property
+    def input_filter(self) -> np.ndarray:
+        return self.__input_mask
+    
+    @property
+    def output_filter(self) -> np.ndarray:
+        return self.__output_mask
+
+    @property
+    def input_length(self) -> int:
+        return self.__input_length
+
+    @property
+    def output_length(self) -> int:
+        return self.__output_length
 
     @singledispatchmethod
     def __call__(

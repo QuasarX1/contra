@@ -161,7 +161,7 @@ class CatalogueSUBFIND(CatalogueBase):
             raise NotImplementedError("include_unbound param not supported for EAGLE data.")
         return self.get_membership_field("ParticleIDs", particle_type, int)[0]
 
-    def get_halo_centres(self, particle_type: Union[ParticleType, None] = None) -> unyt_array:#TODO: add param ofr physical or co-moving (add to whole API)
+    def get_halo_centres(self, particle_type: Union[ParticleType, None] = None) -> unyt_array:#TODO: add param for physical or co-moving (add to whole API)
         data, h_exp, a_exp, cgs = self.get_FOF_field("GroupCentreOfPotential", particle_type, float)
         return self.snapshot.make_cgs_data("cm", data, h_exp = h_exp, cgs_conversion_factor = cgs).to("Mpc")
 

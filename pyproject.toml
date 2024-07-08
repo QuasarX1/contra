@@ -45,6 +45,7 @@ Source = "https://github.com/QuasarX1/contra"
 contra = "contra._scripts.contra:main"
 contra-setup = "contra._scripts.contra_setup:main"
 contra-run = "contra._scripts.contra_run:main"
+contra-generate-particle-filter = "contra._scripts.generate_particle_filter:main"
 
 [tool.hatch.version]
 path = "src/contra/__about__.py"

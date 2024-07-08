@@ -87,7 +87,7 @@ class HeaderDataset(Struct):
 
 
 
-class ParticleTypeDataset(Struct):
+class ParticleTypeDataset(Struct):#TODO: data is only float/int 32 bit precision!
     """
     particle_type
 
@@ -114,6 +114,20 @@ class ParticleTypeDataset(Struct):
                 doc = "Mass of last halo as a fraction of the L_* mass at that redshift.")
     positions_pre_ejection = TypedAutoProperty[Collection[Collection[float]]](NestedTypeShield(np.ndarray, np.ndarray, np.float64),#TODO: make unyt
                 doc = "Particle coordinates prior to final ejection.")
+
+
+
+class CheckpointData(ParticleTypeDataset):
+    """
+    last_complete_snap_index
+
+    missing_particles_mask
+    """
+
+    last_complete_snap_index = TypedAutoProperty[int](TypeShield(int),
+                doc = "Index of last .")
+    missing_particles_mask = TypedAutoProperty[np.ndarray](NestedTypeShield(np.ndarray, np.bool_),
+                doc = "Boolean mask for particles that have not yet been found in haloes.")
 
 
 
@@ -178,13 +192,13 @@ class SnapshotStatsDataset(Struct):
                 doc = "Number of dark matter particles in the snapshot.")
     N_haloes = TypedAutoProperty[int](TypeShield(int),
                 doc = "Number of haloes.")
-    N_haloes_top_level = TypedAutoProperty[int](TypeShield(int),
+    N_haloes_top_level = NullableTypedAutoProperty[int](TypeShield(int),
                 doc = "Number of haloes with no parent.")
-    N_halo_children = TypedAutoProperty[Collection[int]](NestedTypeShield(np.ndarray, np.int64),
+    N_halo_children = NullableTypedAutoProperty[Collection[int]](NestedTypeShield(np.ndarray, np.int64),
                 doc = "Number of direct children of each halo.")
-    N_halo_decendants = TypedAutoProperty[Collection[int]](NestedTypeShield(np.ndarray, np.int64),
+    N_halo_decendants = NullableTypedAutoProperty[Collection[int]](NestedTypeShield(np.ndarray, np.int64),
                 doc = "Total number of decendants of each halo.")
-    N_halo_particles = TypedAutoProperty[int](TypeShield(int),
+    N_halo_particles = NullableTypedAutoProperty[int](TypeShield(int),
                 doc = "Number of particles in haloes.")
     N_halo_particles_gas = NullableTypedAutoProperty[int](TypeShield(int),
                 doc = "Number of gas particles.")
@@ -204,11 +218,11 @@ class SnapshotStatsDataset(Struct):
                 doc = "Number of newly matched black_hole particles in this snapshot.")
     N_particles_matched_dark_matter = NullableTypedAutoProperty[int](TypeShield(int),
                 doc = "Number of newly matched dark_matter particles in this snapshot.")
-    particle_total_volume = TypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
+    particle_total_volume = NullableTypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume of all particles in the snapshot.")
-    halo_particle_total_volume = TypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
+    halo_particle_total_volume = NullableTypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume particles in haloes in the snapshot.")
-    particles_matched_total_volume = TypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
+    particles_matched_total_volume = NullableTypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume of newly matched particles in the snapshot.")
     particles_matched_total_volume_gas = NullableTypedAutoProperty[unyt_quantity](TypeShield(unyt_quantity),
                 doc = "Total volume of newly matched gas particles in the snapshot.")
@@ -226,41 +240,41 @@ snapshot file:                           {self.snapshot_filepath}
 catalogue membership file:               {self.catalogue_membership_filepath}
 catalogue properties file:               {self.catalogue_properties_filepath}
 number of particles:                     {self.N_particles}
-number of particles in haloes:           {self.N_halo_particles}
+number of particles in haloes:           {self.N_halo_particles if self.N_halo_particles is not None else "---"}
 number of particles newley matched:      {self.N_particles_matched}
-total particle volume:                   {self.particle_total_volume}
+total particle volume:                   {self.particle_total_volume if self.particle_total_volume is not None else "---"}
 number of haloes:                        {self.N_haloes}
-number of top level haloes:              {self.N_haloes_top_level}
-total volume of particles in haloes:     {self.halo_particle_total_volume}
-total volume of particles newly matched: {self.halo_particle_total_volume}\
+number of top level haloes:              {self.N_haloes_top_level if self.N_haloes_top_level is not None else "---"}
+total volume of particles in haloes:     {self.halo_particle_total_volume if self.halo_particle_total_volume is not None else "---"}
+total volume of particles newly matched: {self.particles_matched_total_volume if self.particles_matched_total_volume is not None else "---"}\
 """ + (f"""
 gas:
     number of particles:                     {self.N_particles_gas}
-    number of particles in haloes:           {self.N_halo_particles_gas}
+    number of particles in haloes:           {self.N_halo_particles_gas if self.N_halo_particles_gas is not None else "---"}
     number of particles newly matched:       {self.N_particles_matched_gas}
-    total volume of particles newly matched: {self.particles_matched_total_volume_gas}\
+    total volume of particles newly matched: {self.particles_matched_total_volume_gas if self.particles_matched_total_volume_gas is not None else "---"}\
 """ if self.N_particles_gas is not None        else "gas: -----------") + (f"""
 stars:
     number of particles:                     {self.N_particles_star}
-    number of particles in haloes:           {self.N_halo_particles_star}
+    number of particles in haloes:           {self.N_halo_particles_star if self.N_halo_particles_star is not None else "---"}
     number of particles newly matched:       {self.N_particles_matched_star}
-    total volume of particles newly matched: {self.particles_matched_total_volume_star}\
+    total volume of particles newly matched: {self.particles_matched_total_volume_star if self.particles_matched_total_volume_star is not None else "---"}\
 """ if self.N_particles_star is not None       else "stars: ---------") + (f"""
 black holes:
     number of particles:                     {self.N_particles_black_hole}
-    number of particles in haloes:           {self.N_halo_particles_black_hole}
+    number of particles in haloes:           {self.N_halo_particles_black_hole if self.N_halo_particles_black_hole is not None else "---"}
     number of particles newly matched:       {self.N_particles_matched_black_hole}
-    total volume of particles newly matched: {self.particles_matched_total_volume_black_hole}\
+    total volume of particles newly matched: {self.particles_matched_total_volume_black_hole if self.particles_matched_total_volume_black_hole is not None else "---"}\
 """ if self.N_particles_black_hole is not None else "black holes: ---") + (f"""
 dark mater:
     number of particles:                     {self.N_particles_dark_matter}
-    number of particles in haloes:           {self.N_halo_particles_dark_matter}
+    number of particles in haloes:           {self.N_halo_particles_dark_matter if self.N_halo_particles_dark_matter is not None else "---"}
     number of particles newly matched:       {self.N_particles_matched_dark_matter}
-    total volume of particles newly matched: {self.particles_matched_total_volume_dark_matter}\
+    total volume of particles newly matched: {self.particles_matched_total_volume_dark_matter if self.particles_matched_total_volume_dark_matter is not None else "---"}\
 """ if self.N_particles_dark_matter is not None else "dark mater: ---")
     
     @staticmethod
-    def initialise_partial(snapshot: SnapshotBase, catalogue: CatalogueBase) -> "SnapshotStatsDataset":
+    def initialise_partial(snapshot: SnapshotBase, catalogue: CatalogueBase, minimal: bool = False) -> "SnapshotStatsDataset":
         data =  SnapshotStatsDataset()
 
         data.snapshot_filepath = snapshot.filepath
@@ -271,32 +285,34 @@ dark mater:
         for part_type in ParticleType.get_all():
             setattr(data, f"N_particles_{part_type.name.replace(' ', '_')}", snapshot.number_of_particles(part_type))
         data.N_haloes = len(catalogue)
-        data.N_halo_children = catalogue.number_of_children
-        data.N_halo_decendants = catalogue.number_of_decendants
+        if data.N_haloes > 0:
+            data.N_halo_children = catalogue.number_of_children
+            data.N_halo_decendants = catalogue.number_of_decendants
 
-        data.particle_total_volume = sum(
-            [
-                snapshot.get_volumes(p).to("Mpc**3").sum()
-                for p
-                in ParticleType.get_all()
-            ],
-            start = unyt_quantity(0.0, units = "Mpc**3")
-        )
+        if not minimal:
+            data.particle_total_volume = sum(
+                [
+                    snapshot.get_volumes(p).to("Mpc**3").sum()
+                    for p
+                    in ParticleType.get_all()
+                ],
+                start = unyt_quantity(0.0, units = "Mpc**3")
+            )
 
-        data.N_haloes_top_level = int((catalogue.get_halo_parent_IDs() == -1).sum())
+            data.N_haloes_top_level = int((catalogue.get_halo_parent_IDs() == -1).sum())
 
-        data.N_halo_particles_gas = len(catalogue.get_particle_IDs(ParticleType.gas))
-        data.N_halo_particles_star = len(catalogue.get_particle_IDs(ParticleType.star))
-        data.N_halo_particles_black_hole = len(catalogue.get_particle_IDs(ParticleType.black_hole))
-        data.N_halo_particles_dark_matter = len(catalogue.get_particle_IDs(ParticleType.dark_matter))
+            data.N_halo_particles_gas = len(catalogue.get_particle_IDs(ParticleType.gas))
+            data.N_halo_particles_star = len(catalogue.get_particle_IDs(ParticleType.star))
+            data.N_halo_particles_black_hole = len(catalogue.get_particle_IDs(ParticleType.black_hole))
+            data.N_halo_particles_dark_matter = len(catalogue.get_particle_IDs(ParticleType.dark_matter))
 
-        data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
-        data.halo_particle_total_volume = sum([ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_volumes(p).to("Mpc**3")).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3"))
+            data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
+            data.halo_particle_total_volume = sum([ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_volumes(p).to("Mpc**3")).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3"))
 
         return data
 
     @staticmethod
-    async def initialise_partial_async(snapshot: SnapshotBase, catalogue: CatalogueBase) -> "SnapshotStatsDataset":#TOSO:
+    async def initialise_partial_async(snapshot: SnapshotBase, catalogue: CatalogueBase, minimal: bool = False) -> "SnapshotStatsDataset":#TODO:
         data =  SnapshotStatsDataset()
 
         data.snapshot_filepath = snapshot.filepath
@@ -307,58 +323,61 @@ dark mater:
         for part_type in ParticleType.get_all():
             setattr(data, f"N_particles_{part_type.name.replace(' ', '_')}", snapshot.number_of_particles(part_type))
         data.N_haloes = len(catalogue)
-        data.N_halo_children = catalogue.number_of_children
-        data.N_halo_decendants = catalogue.number_of_decendants
+        if data.N_haloes > 0:
+            data.N_halo_children = catalogue.number_of_children
+            data.N_halo_decendants = catalogue.number_of_decendants
 
-        # Async operation functions
+        if not minimal:
 
-        async def calc__particle_total_volume():
-            data.particle_total_volume = sum(
-                [
-                    (smoothing_lengths.to("Mpc")**3).sum()
-                    for smoothing_lengths
-                    in await asyncio.gather(*[snapshot.get_smoothing_lengths_async(p) for p in ParticleType.get_all()])
-                ],
-                start = unyt_quantity(0.0, units = "Mpc**3")
-            ) * (np.pi * 4/3)
+            # Async operation functions
 
-        async def calc__N_haloes_top_level():
-            data.N_haloes_top_level = int((await catalogue.get_halo_parent_IDs_async() == -1).sum())
+            async def calc__particle_total_volume():
+                data.particle_total_volume = sum(
+                    [
+                        (smoothing_lengths.to("Mpc")**3).sum()
+                        for smoothing_lengths
+                        in await asyncio.gather(*[snapshot.get_smoothing_lengths_async(p) for p in ParticleType.get_all()])
+                    ],
+                    start = unyt_quantity(0.0, units = "Mpc**3")
+                ) * (np.pi * 4/3)
 
-        async def calc__N_halo_particles_of_type(part_type: ParticleType):
-            return len(await catalogue.get_particle_IDs_async(part_type))
-        async def calc__N_halo_particles():
-            (
-                data.N_halo_particles_gas,
-                data.N_halo_particles_star,
-                data.N_halo_particles_black_hole,
-                data.N_halo_particles_dark_matter,
-            ) = await asyncio.gather(
-                calc__N_halo_particles_of_type(ParticleType.gas),
-                calc__N_halo_particles_of_type(ParticleType.star),
-                calc__N_halo_particles_of_type(ParticleType.black_hole),
-                calc__N_halo_particles_of_type(ParticleType.dark_matter)
-            )
+            async def calc__N_haloes_top_level():
+                data.N_haloes_top_level = int((await catalogue.get_halo_parent_IDs_async() == -1).sum())
 
-        # Run all async functions
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor() as pool:
-            future = loop.run_in_executor(pool,
-                asyncio.gather,
-                calc__particle_total_volume(),
-                calc__N_haloes_top_level(),
-                calc__N_halo_particles()
-            )
-            while not future.done(): pass
-            future.result()
+            async def calc__N_halo_particles_of_type(part_type: ParticleType):
+                return len(await catalogue.get_particle_IDs_async(part_type))
+            async def calc__N_halo_particles():
+                (
+                    data.N_halo_particles_gas,
+                    data.N_halo_particles_star,
+                    data.N_halo_particles_black_hole,
+                    data.N_halo_particles_dark_matter,
+                ) = await asyncio.gather(
+                    calc__N_halo_particles_of_type(ParticleType.gas),
+                    calc__N_halo_particles_of_type(ParticleType.star),
+                    calc__N_halo_particles_of_type(ParticleType.black_hole),
+                    calc__N_halo_particles_of_type(ParticleType.dark_matter)
+                )
 
-        data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
-        data.halo_particle_total_volume = sum([(ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
+            # Run all async functions
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                future = loop.run_in_executor(pool,
+                    asyncio.gather,
+                    calc__particle_total_volume(),
+                    calc__N_haloes_top_level(),
+                    calc__N_halo_particles()
+                )
+                while not future.done(): pass
+                future.result()
+
+            data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
+            data.halo_particle_total_volume = sum([(ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
 
         return data
 
     @staticmethod
-    def initialise_partial_alt(snapshot: SnapshotBase, catalogue: CatalogueBase) -> "SnapshotStatsDataset":
+    def initialise_partial_alt(snapshot: SnapshotBase, catalogue: CatalogueBase, minimal: bool = False) -> "SnapshotStatsDataset":
         data =  SnapshotStatsDataset()
 
         data.snapshot_filepath = snapshot.filepath
@@ -369,53 +388,56 @@ dark mater:
         for part_type in ParticleType.get_all():
             setattr(data, f"N_particles_{part_type.name.replace(' ', '_')}", snapshot.number_of_particles(part_type))
         data.N_haloes = len(catalogue)
-        data.N_halo_children = catalogue.number_of_children
-        data.N_halo_decendants = catalogue.number_of_decendants
+        if data.N_haloes > 0:
+            data.N_halo_children = catalogue.number_of_children
+            data.N_halo_decendants = catalogue.number_of_decendants
 
-        # Async operation functions
+        if not minimal:
 
-        async def calc__particle_total_volume():
-            data.particle_total_volume = sum(
-                [
-                    (smoothing_lengths.to("Mpc")**3).sum()
-                    for smoothing_lengths
-                    in await asyncio.gather(*[snapshot.get_smoothing_lengths_async(p) for p in ParticleType.get_all()])
-                ],
-                start = unyt_quantity(0.0, units = "Mpc**3")
-            ) * (np.pi * 4/3)
+            # Async operation functions
 
-        async def calc__N_haloes_top_level():
-            data.N_haloes_top_level = int((await catalogue.get_halo_parent_IDs_async() == -1).sum())
+            async def calc__particle_total_volume():
+                data.particle_total_volume = sum(
+                    [
+                        (smoothing_lengths.to("Mpc")**3).sum()
+                        for smoothing_lengths
+                        in await asyncio.gather(*[snapshot.get_smoothing_lengths_async(p) for p in ParticleType.get_all()])
+                    ],
+                    start = unyt_quantity(0.0, units = "Mpc**3")
+                ) * (np.pi * 4/3)
 
-        async def calc__N_halo_particles_of_type(part_type: ParticleType):
-            return len(await catalogue.get_particle_IDs_async(part_type))
-        async def calc__N_halo_particles():
-            (
-                data.N_halo_particles_gas,
-                data.N_halo_particles_star,
-                data.N_halo_particles_black_hole,
-                data.N_halo_particles_dark_matter,
-            ) = await asyncio.gather(
-                calc__N_halo_particles_of_type(ParticleType.gas),
-                calc__N_halo_particles_of_type(ParticleType.star),
-                calc__N_halo_particles_of_type(ParticleType.black_hole),
-                calc__N_halo_particles_of_type(ParticleType.dark_matter)
-            )
+            async def calc__N_haloes_top_level():
+                data.N_haloes_top_level = int((await catalogue.get_halo_parent_IDs_async() == -1).sum())
 
-        # Run all async functions
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor() as pool:
-            future = loop.run_in_executor(pool,
-                asyncio.gather,
-                calc__particle_total_volume(),
-                calc__N_haloes_top_level(),
-                calc__N_halo_particles()
-            )
-            while not future.done(): pass
-            future.result()
+            async def calc__N_halo_particles_of_type(part_type: ParticleType):
+                return len(await catalogue.get_particle_IDs_async(part_type))
+            async def calc__N_halo_particles():
+                (
+                    data.N_halo_particles_gas,
+                    data.N_halo_particles_star,
+                    data.N_halo_particles_black_hole,
+                    data.N_halo_particles_dark_matter,
+                ) = await asyncio.gather(
+                    calc__N_halo_particles_of_type(ParticleType.gas),
+                    calc__N_halo_particles_of_type(ParticleType.star),
+                    calc__N_halo_particles_of_type(ParticleType.black_hole),
+                    calc__N_halo_particles_of_type(ParticleType.dark_matter)
+                )
 
-        data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
-        data.halo_particle_total_volume = sum([(ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
+            # Run all async functions
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as pool:
+                future = loop.run_in_executor(pool,
+                    asyncio.gather,
+                    calc__particle_total_volume(),
+                    calc__N_haloes_top_level(),
+                    calc__N_halo_particles()
+                )
+                while not future.done(): pass
+                future.result()
+
+            data.N_halo_particles = sum([len(catalogue.get_particle_IDs(p)) for p in ParticleType.get_all()])
+            data.halo_particle_total_volume = sum([(ArrayReorder.create(snapshot.get_IDs(p), catalogue.get_particle_IDs(p))(snapshot.get_smoothing_lengths(p).to("Mpc"))**3).sum() for p in ParticleType.get_all()], start = unyt_quantity(0.0, units = "Mpc**3")) * (np.pi * 4/3)
 
         return data
 
@@ -566,13 +588,14 @@ class OutputWriter(object):
     Writes datasets to an HDF5 file.
     """
 
-    def __init__(self, filepath: str) -> None:
+    def __init__(self, filepath: str, overwrite = False) -> None:
         self.__filepath = filepath
         self.__file = None
 
         # Create the file
-        f = h5.File(self.__filepath, "w")
-        f.create_group("SnapshotStats")
+        f = h5.File(self.__filepath, "w" if overwrite else "a")
+        if overwrite or "SnapshotStats" not in f:
+            f.create_group("SnapshotStats")
         f.close()
 
     @property
@@ -613,9 +636,52 @@ class OutputWriter(object):
         d.attrs["HasDarkMatter"] = header.has_dark_matter
         d.attrs["HasStatistics"] = header.has_statistics
 
-    def write_particle_type_dataset(self, dataset: ParticleTypeDataset) -> None:
+    def increase_number_of_snapshots(self, number_of_snapshots: int) -> None:
         if not self.is_open:
             raise IOError("File not open. Call open() first or use with statement.")
+        if "Header" not in self.__file:
+            raise KeyError("No header dataset to update! Create a header first.")
+        self.__file["Header"].attrs["NumberSearchedSnapshots"] = number_of_snapshots
+
+    def write_checkpoint(self, dataset: CheckpointData) -> None:
+
+        if not self.is_open:
+            raise IOError("File not open. Call open() first or use with statement.")
+
+        old_dataset_name = f"{dataset.particle_type.common_hdf5_name}_old"
+        new_dataset_name = dataset.particle_type.common_hdf5_name
+
+        # Create the "Checkpoint" group if it dosen't already exist
+        if "Checkpoint" not in self.__file:
+            c = self.__file.create_group("Checkpoint")
+        else:
+            c = self.__file["Checkpoint"]
+            # Delete old checkpoint backup if present
+            if old_dataset_name in c:
+                del c[old_dataset_name]
+            # Backup last checkpoint if present
+            if new_dataset_name in c:
+                c.move(new_dataset_name, old_dataset_name)
+
+        # Create new checkpoint
+        d = c.create_group(new_dataset_name)
+        d.create_dataset(name = "HaloRedshift", data = np.array(dataset.redshifts, dtype = np.float32))
+        d.create_dataset(name = "HaloID", data = np.array(dataset.halo_ids, dtype = np.int32))
+        d.create_dataset(name = "HaloMass", data = np.array(dataset.halo_masses, dtype = np.float32))
+        d.create_dataset(name = "RelitiveHaloMass", data = np.array(dataset.halo_masses_scaled, dtype = np.float32))
+        d.create_dataset(name = "PositionPreEjection", data = np.array(dataset.positions_pre_ejection, dtype = np.float32))
+        d.create_dataset(name = "MissingParticlesMask", data = np.array(dataset.missing_particles_mask, dtype = np.bool_))
+        d.attrs["SnapshotSearchIndex"] = dataset.last_complete_snap_index
+
+
+    def write_particle_type_dataset(self, dataset: ParticleTypeDataset, overwrite: bool = False) -> None:
+        if not self.is_open:
+            raise IOError("File not open. Call open() first or use with statement.")
+        if dataset.particle_type.common_hdf5_name in self.__file:
+            if overwrite:
+                del self.__file[dataset.particle_type.common_hdf5_name]
+            else:
+                raise KeyError("Output dataset already exists. Specify \"overwrite\" to allow overwriting of existing datasets.")
         d = self.__file.create_group(dataset.particle_type.common_hdf5_name)
         d.create_dataset(name = "HaloRedshift", data = dataset.redshifts)
         d.create_dataset(name = "HaloID", data = dataset.halo_ids)
@@ -623,7 +689,7 @@ class OutputWriter(object):
         d.create_dataset(name = "RelitiveHaloMass", data = dataset.halo_masses_scaled)
         d.create_dataset(name = "PositionPreEjection", data = dataset.positions_pre_ejection)
 
-    def write_snapshot_stats_dataset(self, index: int, stats: SnapshotStatsDataset) -> None:
+    def write_snapshot_stats_dataset(self, index: int, stats: SnapshotStatsDataset, minimal = False) -> None:
         if not self.is_open:
             raise IOError("File not open. Call open() first or use with statement.")
         d = self.__file["SnapshotStats"].create_group(str(index))
@@ -633,12 +699,14 @@ class OutputWriter(object):
         d.attrs["Redshift"] = stats.redshift
         d.attrs["NumberOfParticles"] = stats.N_particles
         d.attrs["NumberOfHaloes"] = stats.N_haloes
-        d.attrs["NumberOfTopLevelHaloes"] = stats.N_haloes_top_level
-        d.attrs["NumberOfHaloParticles"] = stats.N_halo_particles
+        if not minimal:
+            d.attrs["NumberOfTopLevelHaloes"] = stats.N_haloes_top_level
+            d.attrs["NumberOfHaloParticles"] = stats.N_halo_particles
         d.attrs["NumberOfMatchedParticles"] = stats.N_particles_matched
-        d.attrs["VolumeOfParticles"] = stats.particle_total_volume.to("Mpc**3").value
-        d.attrs["VolumeOfHaloParticles"] = stats.halo_particle_total_volume.to("Mpc**3").value
-        d.attrs["VolumeOfMatchedParticles"] = stats.particles_matched_total_volume.to("Mpc**3").value
+        if not minimal:
+            d.attrs["VolumeOfParticles"] = stats.particle_total_volume.to("Mpc**3").value
+            d.attrs["VolumeOfHaloParticles"] = stats.halo_particle_total_volume.to("Mpc**3").value
+            d.attrs["VolumeOfMatchedParticles"] = stats.particles_matched_total_volume.to("Mpc**3").value
 
         d.create_dataset(name = "NumberOfTypedParticles", data = np.array([
             (stats.N_particles_gas         if stats.N_particles_gas         is not None else -1),
@@ -664,8 +732,9 @@ class OutputWriter(object):
             (stats.particles_matched_total_volume_black_hole.to("Mpc**3").value  if stats.particles_matched_total_volume_black_hole  is not None else -1),
             (stats.particles_matched_total_volume_dark_matter.to("Mpc**3").value if stats.particles_matched_total_volume_dark_matter is not None else -1)
         ], dtype = float))
-        d.create_dataset(name = "HaloesNumberOfChildren", data = stats.N_halo_children)
-        d.create_dataset(name = "HaloesNumberOfDecendants", data = stats.N_halo_decendants)
+        if stats.N_haloes > 0:
+            d.create_dataset(name = "HaloesNumberOfChildren", data = stats.N_halo_children)
+            d.create_dataset(name = "HaloesNumberOfDecendants", data = stats.N_halo_decendants)
 
     def write(self, data: ContraData) -> None:
         force_open = not self.is_open
@@ -729,6 +798,24 @@ class OutputReader(object):
         s.has_dark_matter = bool(self.__file["Header"].attrs["HasDarkMatter"])
         s.has_statistics = bool(self.__file["Header"].attrs["HasStatistics"])
         return s
+    
+    def read_checkpoint(self, part_type: ParticleType) -> CheckpointData:
+        if not self.is_open:
+            raise IOError("File not open. Call open() first or use with statement.")
+        if "Checkpoint" not in self.__file:
+            raise IOError("No checkpoints avalible.")
+        elif part_type.common_hdf5_name not in self.__file["Checkpoint"]:
+            raise KeyError(f"No checkpoint data for {part_type.name} particles.")
+        d = self.__file[f"Checkpoint/{part_type.common_hdf5_name}"]
+        return CheckpointData(
+            redshifts = np.array(d["HaloRedshift"][:], dtype = np.float64),
+            halo_ids = np.array(d["HaloID"][:], dtype = np.int64),
+            halo_masses = np.array(d["HaloMass"][:], dtype = np.float64),
+            halo_masses_scaled = np.array(d["RelitiveHaloMass"][:], dtype = np.float64),
+            positions_pre_ejection = np.array(d["PositionPreEjection"][:], dtype = np.float64),
+            missing_particles_mask = np.array(d["MissingParticlesMask"][:], dtype = np.bool_),
+            last_complete_snap_index = int(d.attrs["SnapshotSearchIndex"])
+        )
 
     def read_particle_type_dataset(self, part_type: ParticleType) -> ParticleTypeDataset:
         if not self.is_open:
@@ -760,12 +847,18 @@ class OutputReader(object):
         s.redshift = float(d.attrs["Redshift"])
         s.N_particles = int(d.attrs["NumberOfParticles"])
         s.N_haloes = int(d.attrs["NumberOfHaloes"])
-        s.N_haloes_top_level = int(d.attrs["NumberOfTopLevelHaloes"])
-        s.N_halo_particles = int(d.attrs["NumberOfHaloParticles"])
-        s.N_particles_matched = int(d.attrs["NumberOfMatchedParticles"])
-        s.particle_total_volume = unyt_quantity(d.attrs["VolumeOfParticles"], units = "Mpc**3")
-        s.halo_particle_total_volume = unyt_quantity(d.attrs["VolumeOfHaloParticles"], units = "Mpc**3")
-        s.particles_matched_total_volume = unyt_quantity(d.attrs["VolumeOfMatchedParticles"], units = "Mpc**3")
+        if "NumberOfTopLevelHaloes" in d.attrs:
+            s.N_haloes_top_level = int(d.attrs["NumberOfTopLevelHaloes"])
+        if "NumberOfHaloParticles" in d.attrs:
+            s.N_halo_particles = int(d.attrs["NumberOfHaloParticles"])
+        if "NumberOfMatchedParticles" in d.attrs:
+            s.N_particles_matched = int(d.attrs["NumberOfMatchedParticles"])
+        if "VolumeOfParticles" in d.attrs:
+            s.particle_total_volume = unyt_quantity(d.attrs["VolumeOfParticles"], units = "Mpc**3")
+        if "VolumeOfHaloParticles" in d.attrs:
+            s.halo_particle_total_volume = unyt_quantity(d.attrs["VolumeOfHaloParticles"], units = "Mpc**3")
+        if "VolumeOfMatchedParticles" in d.attrs:
+            s.particles_matched_total_volume = unyt_quantity(d.attrs["VolumeOfMatchedParticles"], units = "Mpc**3")
 
         N_particles__by_type = d["NumberOfTypedParticles"][:]
         if N_particles__by_type[0] > -1:
@@ -807,8 +900,9 @@ class OutputReader(object):
         if particles_matched_total_volume__by_type[3] > -1:
             s.particles_matched_total_volume_dark_matter = unyt_quantity(particles_matched_total_volume__by_type[3], units = "Mpc**3")
 
-        s.N_halo_children = d["HaloesNumberOfChildren"][:]
-        s.N_halo_decendants = d["HaloesNumberOfDecendants"][:]
+        if s.N_haloes > 0:
+            s.N_halo_children = d["HaloesNumberOfChildren"][:]
+            s.N_halo_decendants = d["HaloesNumberOfDecendants"][:]
 
         return s
     

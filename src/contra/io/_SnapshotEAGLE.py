@@ -63,7 +63,7 @@ class SnapshotEAGLE(SnapshotBase):
             redshift = redshift,
             hubble_param = hubble_param,
             expansion_factor = expansion_factor,
-            box_size = unyt_array(np.array([self.__box_size_internal_units, self.__box_size_internal_units, self.__box_size_internal_units], dtype = float) * (hubble_param * self.__length_h_exp) * self.__length_cgs_conversion_factor, units = "cm").to("Mpc")
+            box_size = unyt_array(np.array([self.__box_size_internal_units, self.__box_size_internal_units, self.__box_size_internal_units], dtype = float) * (hubble_param ** self.__length_h_exp) * self.__length_cgs_conversion_factor, units = "cm").to("Mpc")
         )
 
     @property
@@ -75,7 +75,7 @@ class SnapshotEAGLE(SnapshotBase):
         Convert raw data to a unyt_array object with the correct units.
         To retain data in co-moving space, omit the value for "a_exp".
         """
-        return unyt_array(data * (self.h * h_exp) * (self.a * a_exp) * cgs_conversion_factor, units = cgs_units)
+        return unyt_array(data * (self.h ** h_exp) * (self.a ** a_exp) * cgs_conversion_factor, units = cgs_units)
     
     def _convert_to_cgs_length(self, data: np.ndarray, propper = False) -> unyt_array:
         return self.make_cgs_data(
@@ -219,7 +219,7 @@ class SnapshotEAGLE(SnapshotBase):
         for num in (snapshot_number_strings if snapshot_number_strings is not None else snap_file_info.keys()):
             if num not in snap_file_info:
                 raise FileNotFoundError("Snapshot numbers provided not all present in directory.")
-            selected_files[num] = { i : os.path.join(directory, f"{snap_file_info[num][0]}.{i}.{snap_file_info[num][3]}") for i in snap_file_info[num][2] }
+            selected_files[num] = { i : os.path.join("/mnt/aridata1/users/aricrowe/replacement_EAGLE_snap/RefL0100N1504" if num == "006" else directory, f"{snap_file_info[num][0]}.{i}.{snap_file_info[num][3]}") for i in snap_file_info[num][2] }
 
         return selected_files
 
