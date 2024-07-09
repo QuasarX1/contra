@@ -9,6 +9,7 @@ import numpy as np
 from unyt import unyt_array
 from pyread_eagle import EagleSnapshot
 import h5py as h5
+from QuasarCode import Console
 
 from .._ParticleType import ParticleType
 from .._ArrayReorder import ArrayReorder
@@ -52,6 +53,9 @@ class CatalogueSUBFIND(CatalogueBase):
                 if i == 0:
                     self.__n_total_FOF_groups: int = int(file["FOF"].attrs["TotNgroups"])
                 n_groups_per_file[i] = file["FOF"].attrs["Ngroups"]
+        if self.__n_total_FOF_groups != sum(n_groups_per_file):
+            Console.print_warning("More FOF haloes in catalogue than reported. Assuming aggrigate number as correct.")
+            self.__n_total_FOF_groups = sum(n_groups_per_file)
 #        self.__n_total_FOF_groups: int = int(self.__halo_data_files[0]["FOF"].attrs["TotNgroups"])
 #        self.__n_FOF_groups_per_file: np.ndarray = np.array([self.__halo_data_files[i]["FOF"].attrs["Ngroups"] for i in range(self.__n_parallel_components_properties)], dtype = int)
         self.__n_FOF_groups_per_file: np.ndarray = np.array(n_groups_per_file, dtype = int)
