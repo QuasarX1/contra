@@ -29,12 +29,21 @@ class SnapshotEAGLE(SnapshotBase):
         return EagleSnapshot(filepath, Settings.debug)
 
     def __init__(self, filepath: str) -> None:
+        Console.print_debug(f"Loading EAGLE snapshot from: {filepath}")
+
+        pattern = re.compile(r'.*sn[ai]pshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]sn[ai]p_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
+        match = pattern.match(filepath)
+        if not match:
+            raise ValueError(f"Snapshot filepath \"{filepath}\" does not conform to the naming scheme of an EAGLE snapshot. EAGLE snapshot files must have a clear snapshot number component in both the folder and file names.")
+        snap_num = match.group("number")
+
         hdf5_reader = HDF5_File(filepath)
 
         with HDF5_File(filepath, "r") as hdf5_reader:
             redshift = hdf5_reader["Header"].attrs["Redshift"]
             hubble_param = hdf5_reader["Header"].attrs["HubbleParam"]
             expansion_factor = hdf5_reader["Header"].attrs["ExpansionFactor"]
+            omega_baryon = hdf5_reader["Header"].attrs["OmegaBaryon"]
             self.__number_of_particles = hdf5_reader["Header"].attrs["NumPart_Total"]
             self.__dm_mass_internal_units = hdf5_reader["Header"].attrs["MassTable"][1]
             self.__box_size_internal_units = hdf5_reader["Header"].attrs["BoxSize"]
@@ -54,14 +63,28 @@ class SnapshotEAGLE(SnapshotBase):
             self.__velocity_a_exp: float = hdf5_reader["PartType1/Velocity"].attrs["aexp-scale-exponent"]
             self.__velocity_cgs_conversion_factor: float = hdf5_reader["PartType1/Velocity"].attrs["CGSConversionFactor"]
 
+            self.__cgs_unit_conversion_factor_density: float = hdf5_reader["Units"].attrs["UnitDensity_in_cgs"]
+            self.__cgs_unit_conversion_factor_energy: float = hdf5_reader["Units"].attrs["UnitEnergy_in_cgs"]
+            self.__cgs_unit_conversion_factor_length: float = hdf5_reader["Units"].attrs["UnitLength_in_cm"]
+            self.__cgs_unit_conversion_factor_mass: float = hdf5_reader["Units"].attrs["UnitMass_in_g"]
+            self.__cgs_unit_conversion_factor_pressure: float = hdf5_reader["Units"].attrs["UnitPressure_in_cgs"]
+            self.__cgs_unit_conversion_factor_time: float = hdf5_reader["Units"].attrs["UnitTime_in_s"]
+            self.__cgs_unit_conversion_factor_velocity: float = hdf5_reader["Units"].attrs["UnitVelocity_in_cm_per_s"]
+
+            assert self.__length_cgs_conversion_factor == self.__cgs_unit_conversion_factor_length
+            assert self.__mass_cgs_conversion_factor == self.__cgs_unit_conversion_factor_mass
+            assert self.__velocity_cgs_conversion_factor == self.__cgs_unit_conversion_factor_velocity
+
         self.__file_object = SnapshotEAGLE.make_reader_object(filepath)
         Console.print_debug("Calling pyread_eagle object's select_region method:")
         self.__file_object.select_region(0.0, self.__box_size_internal_units, 0.0, self.__box_size_internal_units, 0.0, self.__box_size_internal_units)
 
         super().__init__(
             filepath = filepath,
+            number = snap_num,
             redshift = redshift,
             hubble_param = hubble_param,
+            omega_baryon = omega_baryon,
             expansion_factor = expansion_factor,
             box_size = unyt_array(np.array([self.__box_size_internal_units, self.__box_size_internal_units, self.__box_size_internal_units], dtype = float) * (hubble_param ** self.__length_h_exp) * self.__length_cgs_conversion_factor, units = "cm").to("Mpc")
         )
@@ -131,10 +154,21 @@ class SnapshotEAGLE(SnapshotBase):
 
     #TODO: check units and come up with a better way of doing the unit assignment and conversion
     def _get_sfr(self, particle_type: ParticleType) -> unyt_array:
-        return unyt_array(self.__file_object.read_dataset(particle_type.value, "StarFormationRate"), units = "Msun*(10**10)/Gyr").to("Msun/Gyr")
+        return unyt_array(self.__file_object.read_dataset(particle_type.value, "StarFormationRate"), units = "Msun/yr")
 
     def _get_metalicities(self, particle_type: ParticleType) -> unyt_array:
         return unyt_array(self.__file_object.read_dataset(particle_type.value, "Metallicity"), units = None)
+
+    def _get_densities(self, particle_type: ParticleType) -> unyt_array:
+        return self.make_cgs_data(
+            "g/cm**3",
+            self.__file_object.read_dataset(particle_type.value, "Density"),
+            h_exp = 2.0,
+            cgs_conversion_factor = self.__cgs_unit_conversion_factor_density
+        ).to("Msun/Mpc**3")
+
+    def _get_temperatures(self, particle_type: ParticleType) -> unyt_array:
+        return unyt_array(self.__file_object.read_dataset(particle_type.value, "Temperature"), units = "K")
 
     @staticmethod
     def generate_filepaths(

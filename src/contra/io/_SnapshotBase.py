@@ -7,6 +7,8 @@ from abc import ABC, abstractmethod
 from typing import Awaitable, Union, List, Tuple, Dict
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from scipy.constants import gravitational_constant
+import os
 
 import numpy as np
 from unyt import unyt_array, unyt_quantity
@@ -19,22 +21,35 @@ class SnapshotBase(ABC):
     def __init__(
                     self,
                     filepath: str,
+                    number: str,
                     redshift: float,
                     hubble_param: float,
+                    omega_baryon: float,
                     expansion_factor: float,
                     box_size: float
                 ) -> None:
         self.__filepath: str = filepath
+        self.__file_name: str = os.path.split(self.__filepath)[1]
+        self.__snap_num: str = number
         self.__redshift: float = redshift
         self.__hubble_param: float = hubble_param
+        self.__omega_baryon: float = omega_baryon
         self.__expansion_factor: float = expansion_factor
         self.__box_size: unyt_array = box_size
 
         self.__n_parts: Dict[ParticleType, int] = self._get_number_of_particles()
 
     @property
-    def filepath(self) -> float:
+    def filepath(self) -> str:
         return self.__filepath
+
+    @property
+    def file_name(self) -> str:
+        return self.__file_name
+
+    @property
+    def number(self) -> str:
+        return self.__snap_num
 
     @property
     def redshift(self) -> float:
@@ -58,7 +73,7 @@ class SnapshotBase(ABC):
         return self.expansion_factor
 
     @property
-    def box_size(self) -> float:
+    def box_size(self) -> unyt_array:
         return self.__box_size
 
     def remove_h_factor(self, data: np.ndarray) -> np.ndarray:
@@ -72,6 +87,26 @@ class SnapshotBase(ABC):
 
     def to_comoving(self, data: Union[np.ndarray, unyt_array]) -> Union[np.ndarray, unyt_array]:
         return data / self.a
+    
+    def calculate_comoving_critical_density(self):
+        return (self.h**2 * unyt_quantity(100.0, units = "km/s/Mpc")**2 * 3.0 / 8.0 / np.pi / unyt_quantity(gravitational_constant, units = "N*m**2/kg**2")).to("Msun/Mpc**3")
+
+    def calculate_proper_critical_density(self, redshift: float):
+        return (1.0 + redshift)**3 * self.calculate_comoving_critical_density()
+
+    @property
+    def proper_critical_density(self):
+        return self.calculate_proper_critical_density(self.z)
+
+    def calculate_comoving_critical_gas_density(self):
+        return self.__omega_baryon * self.calculate_comoving_critical_density()
+    
+    def calculate_proper_critical_gas_density(self, redshift: float):
+        return self.__omega_baryon * self.calculate_proper_critical_density(redshift)
+
+    @property
+    def proper_critical_gas_density(self):
+        return self.calculate_proper_critical_gas_density(self.z)
 
     @abstractmethod
     def _get_number_of_particles(self) -> Dict[ParticleType, int]:
@@ -131,6 +166,22 @@ class SnapshotBase(ABC):
         return self._get_metalicities(particle_type)
     @abstractmethod
     def _get_metalicities(self, particle_type: ParticleType) -> unyt_array:
+        raise NotImplementedError("Attempted to call an abstract method.")
+
+    def get_densities(self, particle_type: ParticleType) -> unyt_array:
+        if particle_type != ParticleType.gas and particle_type != ParticleType.star:
+            raise ValueError("get_densities is not supported for particle types other than gas and star.")
+        return self._get_densities(particle_type)
+    @abstractmethod
+    def _get_densities(self, particle_type: ParticleType) -> unyt_array:
+        raise NotImplementedError("Attempted to call an abstract method.")
+
+    def get_temperatures(self, particle_type: ParticleType) -> unyt_array:
+        if particle_type != ParticleType.gas and particle_type != ParticleType.star:
+            raise ValueError("get_temperatures is not supported for particle types other than gas and star.")
+        return self._get_temperatures(particle_type)
+    @abstractmethod
+    def _get_temperatures(self, particle_type: ParticleType) -> unyt_array:
         raise NotImplementedError("Attempted to call an abstract method.")
 
     # async versions

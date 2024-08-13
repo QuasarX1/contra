@@ -475,12 +475,19 @@ class ContraData(Struct):
     def dark_matter(self) -> Union[ParticleTypeDataset, None]:
         return self.data[ParticleType.dark_matter] if ParticleType.dark_matter in self.data else None
     
-    def _get_snapshot(self, filepath: str) -> SnapshotBase:
-        if self.header.simulation_type == "SWIFT":
+    @staticmethod
+    def _get_snapshot_static(filepath: str, sim_type: str):
+        if sim_type == "SWIFT":
             return SnapshotSWIFT(filepath)
-        elif self.header.simulation_type == "EAGLE":
+        elif sim_type == "EAGLE":
             return SnapshotEAGLE(filepath)
         else:
+            raise NotImplementedError(f"\"ContraData._get_snapshot_static\" not implemented for source simulation type \"{sim_type}\".")
+    
+    def _get_snapshot(self, filepath: str) -> SnapshotBase:
+        try:
+            return ContraData._get_snapshot_static(filepath, self.header.simulation_type)
+        except NotImplementedError:
             raise NotImplementedError(f"\"ContraData._get_snapshot\" not implemented for source simulation type \"{self.header.simulation_type}\".")
     
     def get_target_snapshot(self) -> SnapshotBase:
@@ -574,11 +581,11 @@ class ContraData(Struct):
         return self.get_snapshot_indexes_of_matched_particles(catalogue.snapshot, part_type)
     
     @staticmethod
-    def load(filepath: str) -> "ContraData":
+    def load(filepath: str, include_stats: bool = True) -> "ContraData":
         result = None
         reader = OutputReader(filepath)
         with reader:
-            result = reader.read()
+            result = reader.read(include_stats)
         return result
 
 
@@ -906,7 +913,7 @@ class OutputReader(object):
 
         return s
     
-    def read(self) -> ContraData:
+    def read(self, include_stats: bool = True) -> ContraData:
         force_open = not self.is_open
         if force_open:
             self.open()
@@ -919,7 +926,7 @@ class OutputReader(object):
             except:
                 loaded_data.pop(p, None)
         s.data = loaded_data
-        if s.header.has_statistics:
+        if s.header.has_statistics and include_stats:
             loaded_snap_stats = []
             for i in range(s.header.N_searched_snapshots):
                 loaded_snap_stats.append(self.read_snapshot_stats_dataset(i))

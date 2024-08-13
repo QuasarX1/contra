@@ -59,12 +59,13 @@ def main():
                 name = "EAGLE",
                 sets_param = "is_EAGLE",
                 description = "Running on EAGLE data.",
-                conflicts = ["snapshot-basename"]
+                conflicts = ["is_SWIFT", "snapshot-basename"]
             ),
             ScriptWrapper.Flag(
                 name = "SWIFT",
                 sets_param = "is_SWIFT",
-                description = "Running on data generated using SWIFT."
+                description = "Running on data generated using SWIFT.",
+                conflicts = ["is_EAGLE"]
             ),
             ScriptWrapper.Flag(
                 name = "gas",

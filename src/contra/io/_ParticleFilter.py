@@ -2,84 +2,90 @@
 #
 # SPDX-License-Identifier: None
 import datetime
-from typing import Any, Union, Collection, List, Dict
+from typing import Any, Union, Collection, List, Tuple, Dict
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import singledispatchmethod
+import os
 
 import numpy as np
 import h5py as h5
 from unyt import unyt_quantity
 from QuasarCode import Console
 from QuasarCode.Data import VersionInfomation
-from QuasarCode.Tools import Struct, TypedAutoProperty, NullableTypedAutoProperty, TypeShield, NestedTypeShield
+from QuasarCode.Tools import Struct, AutoProperty, TypedAutoProperty, NullableTypedAutoProperty, TypeShield, NestedTypeShield
 
+from .. import VERSION
 from .._ParticleType import ParticleType
 from ._Output_Objects import ContraData
 
-class ParticleFilter(Struct):
+
+
+class SnapshotParticleFilter(Struct):
     """
     particle_type
 
     redshift
 
-    snapshot_relitive_filepath
+    snapshot_number
+
+    filepath
 
     allowed_ids
 
-    snapshot_mask
-
-    los_masks (nullable)
+    mask
     """
 
     particle_type: ParticleType = TypedAutoProperty[ParticleType](TypeShield(ParticleType),
                 doc = "Particle type.")
     redshift: float = TypedAutoProperty[float](TypeShield(float),
                 doc = "Redshift of the snapshot to which this filter applies.")
-    snapshot_relitive_filepath: str = TypedAutoProperty[str](TypeShield(str),
+    snapshot_number: str = TypedAutoProperty[str](TypeShield(str),
+                doc = "Number of the snapshot to which this filter applies. This is NOT the parallel file index!")
+    filepath: str = TypedAutoProperty[str](TypeShield(str),
                 doc = "The snapshot file to which this filter applies. The first file if snapshot is split into parallel components.")
-    allowed_ids: np.ndarray = TypedAutoProperty[np.ndarray](NestedTypeShield(np.ndarray, np.int64),
+    #allowed_ids: np.ndarray = TypedAutoProperty[np.ndarray](NestedTypeShield(np.ndarray, np.int64), # Nested type check fails if dimension is empty!
+    allowed_ids: np.ndarray = AutoProperty[np.ndarray](
                 doc = "IDs of selected particles.")
-    snapshot_mask: np.ndarray = TypedAutoProperty[np.ndarray](NestedTypeShield(np.ndarray, np.bool_),
+    mask: np.ndarray = TypedAutoProperty[np.ndarray](NestedTypeShield(np.ndarray, np.bool_),
                 doc = "Numpy boolean mask for selected particles.")
-    los_masks: Dict[str, List["LOSFilter"]] | None = NullableTypedAutoProperty[Dict[str, List["LOSFilter"]]](TypeShield(dict),
-                doc = "Filter data for line-of-sight files associated with this snapshot.")
 
-class LOSFilter(Struct):
+
+
+class LineOfSightParticleFilter(Struct):
     """
     particle_type
 
     redshift
 
-    file_number
+    file_name
 
-    los_index
+    line_of_sight_index
 
-    los_relitive_filepath
+    filepath
 
-    snapshot_filter_object
+    allowed_ids
 
     mask
-
-    particle_ids
     """
 
     particle_type: ParticleType = TypedAutoProperty[ParticleType](TypeShield(ParticleType),
                 doc = "Particle type.")
     redshift: float = TypedAutoProperty[float](TypeShield(float),
                 doc = "Redshift of the line-of-sight to which this filter applies.")
-    file_number: str = TypedAutoProperty[str](TypeShield(str),
-                doc = "Number of the file. May not be unique - use redshift and number for uniqueness.")
-    los_index: int = TypedAutoProperty[float](TypeShield(int),
+    file_name: str = TypedAutoProperty[str](TypeShield(str),
+                doc = "Name of the file including extension.")
+    line_of_sight_index: int = TypedAutoProperty[float](TypeShield(int),
                 doc = "Index of the line-of-sight within its file.")
-    los_relitive_filepath: str = TypedAutoProperty[str](TypeShield(str),
+    filepath: str = TypedAutoProperty[str](TypeShield(str),
                 doc = "The line-of-sight file to which this filter applies.")
-    snapshot_filter_object: "ParticleFilter" = TypedAutoProperty["ParticleFilter"](TypeShield(ParticleFilter),
-                doc = "Snapshot filter object that this line of sight belongs to.")
+    #allowed_ids: np.ndarray = TypedAutoProperty[np.ndarray](NestedTypeShield(np.ndarray, np.int64), # Nested type check fails if dimension is empty!
+    allowed_ids: np.ndarray = AutoProperty[np.ndarray](
+                doc = "IDs of selected particles.")
     mask: np.ndarray = TypedAutoProperty[np.ndarray](NestedTypeShield(np.ndarray, np.bool_),
                 doc = "Numpy boolean mask for selected particles.")
-    particle_ids: np.ndarray = TypedAutoProperty[np.ndarray](NestedTypeShield(np.ndarray, np.int64),
-                doc = "IDs of particles in the line-of-sight. Not usually avalible in the file.")
+
+
 
 class ParticleFilterFile(Struct):
     """
@@ -87,178 +93,319 @@ class ParticleFilterFile(Struct):
 
     date
 
-    output_file
+    filepath
+
+    description
 
     contra_file
 
-    snapshots_directory
+    simulation_type
 
-    los_directory (nullable)
+    snapshots_directory (nullable)
 
-    has_gas
+    line_of_sight_directory (nullable)
 
-    has_stars
+    #snapshot_filters[redshift: float][part_type: ParticleType]
+    snapshot_filters[file: str][part_type: ParticleType]
 
-    has_black_holes
-
-    has_dark_matter
-
-    data
+    #line_of_sight_filters[redshift: float][index: int][part_type: ParticleType]
+    line_of_sight_filters[file: str][index: int][part_type: ParticleType]
     """
-
-    def __init__(self, filepath: str = None, *args, **kwargs) -> None:
-        self.__filepath: Union[str, None] = filepath
-        super().__init__(*args, **kwargs)
-        if self.__filepath is not None:
-            self.__read()
 
     version: VersionInfomation = TypedAutoProperty[VersionInfomation](TypeShield(VersionInfomation),
                 doc = "Contra version number.")
     date: datetime.date = TypedAutoProperty[datetime.date](TypeShield(datetime.date),
                 doc = "Date of execution (start of program).")
-    output_file: str = TypedAutoProperty[str](TypeShield(str),
+    filepath: str = TypedAutoProperty[str](TypeShield(str),
                 doc = "This output file location as generated.")
+    description: str = TypedAutoProperty[str](TypeShield(str),
+                doc = "Information about the file, such as how the filters were calculated.")
     contra_file: str = TypedAutoProperty[str](TypeShield(str),
                 doc = "Contra output file used to generate this file.")
-    snapshots_directory: str = TypedAutoProperty[str](TypeShield(str),
-                doc = "Directory containing associated snapshots.")
-    los_directory: str | None = NullableTypedAutoProperty[str](TypeShield(str),
-                doc = "Directory containing associated line-of-sight files.")
     simulation_type: str = TypedAutoProperty[str](TypeShield(str),
                 doc = "Type of source simulation data.")
-    has_gas: bool = TypedAutoProperty[bool](TypeShield(bool),
-                doc = "This output file contains a dataset for gas particles.")
-    has_stars: bool = TypedAutoProperty[bool](TypeShield(bool),
-                doc = "This output file contains a dataset for star particles.")
-    has_black_holes: bool = TypedAutoProperty[bool](TypeShield(bool),
-                doc = "This output file contains a dataset for black hole particles.")
-    has_dark_matter: bool = TypedAutoProperty[bool](TypeShield(bool),
-                doc = "This output file contains a dataset for dark matter particles.")
+    snapshots_directory: str|None = NullableTypedAutoProperty[str](TypeShield(str),
+                doc = "Directory containing associated snapshots.")
+    line_of_sight_directory: str|None = NullableTypedAutoProperty[str](TypeShield(str),
+                doc = "Directory containing associated line-of-sight files.")
+    #snapshot_filters: Dict[float, Dict[ParticleType, SnapshotParticleFilter]] = TypedAutoProperty[Dict[float, Dict[ParticleType, SnapshotParticleFilter]]](TypeShield(dict),
+    snapshot_filters: Dict[str, Dict[ParticleType, SnapshotParticleFilter]] = TypedAutoProperty[Dict[str, Dict[ParticleType, SnapshotParticleFilter]]](TypeShield(dict),
+                doc = "Filters for snapshot particles.")
+    #line_of_sight_filters: Dict[float, Dict[int, Dict[ParticleType, LineOfSightParticleFilter]]] = TypedAutoProperty[Dict[float, Dict[int, Dict[ParticleType, LineOfSightParticleFilter]]]](TypeShield(dict),
+    line_of_sight_filters: Dict[str, Dict[int, Dict[ParticleType, LineOfSightParticleFilter]]] = TypedAutoProperty[Dict[str, Dict[int, Dict[ParticleType, LineOfSightParticleFilter]]]](TypeShield(dict),
+                doc = "Filters for line-of-sight particles.")
 
-    data: Dict[ParticleType, Dict[str, ParticleFilter]] = TypedAutoProperty[Dict[ParticleType, Dict[str, ParticleFilter]]](TypeShield(dict),#TODO: dict nested shield? (not cast!!!)
-                doc = "Datasets by particle type.")
+    def __init__(self, filepath: str, **kwargs) -> None:
+        date_specified = "date" in kwargs
+        description_specified = "description" in kwargs
+        super().__init__(
+            filepath = filepath,
+            snapshot_filters = kwargs.pop("snapshot_filters", {}),
+            line_of_sight_filters = kwargs.pop("line_of_sight_filters", {}),
+            **kwargs)
+        if os.path.exists(filepath):
+            self.__writable = False
+            self.__read()
+        else:
+            self.__writable = True
+            self.version = VersionInfomation.from_string(VERSION)
+            if not date_specified:
+                self.date = datetime.date.today()
+            if not description_specified:
+                self.description = ""
 
-    @property
-    def gas(self) -> Union[Dict[str, ParticleFilter], None]:
-        return self.data[ParticleType.gas] if ParticleType.gas in self.data else None
-    @property
-    def stars(self) -> Union[Dict[str, ParticleFilter], None]:
-        return self.data[ParticleType.star] if ParticleType.star in self.data else None
-    @property
-    def black_holes(self) -> Union[Dict[str, ParticleFilter], None]:
-        return self.data[ParticleType.black_hole] if ParticleType.black_hole in self.data else None
-    @property
-    def dark_matter(self) -> Union[Dict[str, ParticleFilter], None]:
-        return self.data[ParticleType.dark_matter] if ParticleType.dark_matter in self.data else None
-
-    class FilterKeyError(KeyError):
-        """
-        Requested key not found.
-        """
-
-    def __require_part_type(self, part_type: ParticleType) -> None:
-        if part_type not in self.data:
-            raise ParticleFilterFile.FilterKeyError(f"No filters for {part_type.name} particles.")
-    
-    def get_ids(self, part_type: ParticleType, snapshot_number: str):
-        self. __require_part_type(part_type)
-        return self.data[part_type][snapshot_number].allowed_ids
-
-    def get_snapshot_mask(self, part_type: ParticleType, snapshot_number: str) -> np.ndarray:
-        self. __require_part_type(part_type)
-        return self.data[part_type][snapshot_number].snapshot_mask
-
-    def get_los_mask(self, part_type: ParticleType, snapshot_number: str, los_redshift: int, file_number: str, los_index: int) -> np.ndarray:
-        self. __require_part_type(part_type)
-        return self.data[part_type][snapshot_number].los_masks[f"z{los_redshift}.{file_number}"][los_index]
-    
     def get_contra_data(self) -> ContraData:
         return ContraData.load(self.contra_file)
 
+    @property
+    def has_snapshots(self) -> bool:
+        return len(self.snapshot_filters) > 0
+
+    @property
+    def has_lines_of_sight(self) -> bool:
+        return len(self.line_of_sight_filters) > 0
+    
+#    def get_snapshot_redshifts(self) -> Tuple[float, ...]:
+#        return tuple(self.snapshot_filters.keys())
+#    
+#    def get_line_of_sight_redshifts(self) -> Tuple[float, ...]:
+#        return tuple(self.line_of_sight_filters.keys())
+#
+#    def get_number_of_lines_of_sight(self, redshift: float) -> int:
+#        if redshift not in self.line_of_sight_filters:
+#            raise KeyboardInterrupt(f"No line-of-sight filters avalible for redshift {redshift}.")
+#        return len(self.line_of_sight_filters[redshift]) # Lines of sight should have sequential indexes so we can just check the length of the dictionary
+#
+#    def get_snapshot_particle_types(self, redshift: float) -> Tuple[ParticleType, ...]:
+#        if redshift not in self.snapshot_filters:
+#            raise KeyboardInterrupt(f"No snapshot filters avalible for redshift {redshift}.")
+#        return tuple(self.snapshot_filters[redshift].keys())
+#
+#    def get_line_of_sight_particle_types(self, redshift: float, index: int) -> Tuple[ParticleType, ...]:
+#        if redshift not in self.line_of_sight_filters:
+#            raise KeyboardInterrupt(f"No line-of-sight filters avalible for redshift {redshift}.")
+#        if index not in self.line_of_sight_filters[redshift]:
+#            raise KeyboardInterrupt(f"No line-of-sight filters avalible for index {index} at redshift {redshift}.")
+#        return tuple(self.line_of_sight_filters[redshift][index].keys())
+#
+#    def get_snapshot_filter(self, redshift: float, part_type: ParticleType) -> SnapshotParticleFilter:
+#        if redshift not in self.snapshot_filters:
+#            raise KeyboardInterrupt(f"No snapshot filters avalible for redshift {redshift}.")
+#        if part_type not in self.snapshot_filters[redshift]:
+#            raise KeyboardInterrupt(f"No snapshot filters avalible for {part_type.name} particles at redshift {redshift}.")
+#        return self.snapshot_filters[redshift][part_type]
+#
+#    def get_line_of_sight_filter(self, redshift: float, index: int, part_type: ParticleType = ParticleType.gas) -> LineOfSightParticleFilter:
+#        if redshift not in self.line_of_sight_filters:
+#            raise KeyboardInterrupt(f"No line-of-sight filters avalible for redshift {redshift}.")
+#        if index not in self.line_of_sight_filters[redshift]:
+#            raise KeyboardInterrupt(f"No line-of-sight filters avalible for index {index} at redshift {redshift}.")
+#        if part_type not in self.line_of_sight_filters[redshift][index]:
+#            raise KeyboardInterrupt(f"No line-of-sight filters avalible for {part_type.name} particles at redshift {redshift}.")
+#        return self.line_of_sight_filters[redshift][index][part_type]
+
+    def get_snapshot_file_names(self) -> Tuple[str, ...]:
+        return tuple(self.snapshot_filters.keys())
+
+    def get_line_of_sight_file_names(self) -> Tuple[str, ...]:
+        return tuple(self.line_of_sight_filters.keys())
+
+    def get_number_of_lines_of_sight(self, file_name: str) -> int:
+        if file_name not in self.line_of_sight_filters:
+            raise KeyboardInterrupt(f"No line-of-sight filters avalible for file {file_name}.")
+        return len(self.line_of_sight_filters[file_name]) # Lines of sight should have sequential indexes so we can just check the length of the dictionary
+
+    def get_snapshot_particle_types(self, file_name: str) -> Tuple[ParticleType, ...]:
+        if file_name not in self.snapshot_filters:
+            raise KeyboardInterrupt(f"No snapshot filters avalible for file {file_name}.")
+        return tuple(self.snapshot_filters[file_name].keys())
+
+    def get_line_of_sight_particle_types(self, file_name: str, index: int) -> Tuple[ParticleType, ...]:
+        if file_name not in self.line_of_sight_filters:
+            raise KeyboardInterrupt(f"No line-of-sight filters avalible for file {file_name}.")
+        if index not in self.line_of_sight_filters[file_name]:
+            raise KeyboardInterrupt(f"No line-of-sight filters avalible for LOS{index} in file {file_name}.")
+        return tuple(self.line_of_sight_filters[file_name][index].keys())
+
+    def get_snapshot_filter(self, file_name: str, part_type: ParticleType) -> SnapshotParticleFilter:
+        if file_name not in self.snapshot_filters:
+            raise KeyboardInterrupt(f"No snapshot filters avalible for file {file_name}.")
+        if part_type not in self.snapshot_filters[file_name]:
+            raise KeyboardInterrupt(f"No snapshot filters avalible for {part_type.name} particles in file {file_name}.")
+        return self.snapshot_filters[file_name][part_type]
+
+    def get_line_of_sight_filter(self, file_name: str, index: int, part_type: ParticleType = ParticleType.gas) -> LineOfSightParticleFilter:
+        if file_name not in self.line_of_sight_filters:
+            raise KeyboardInterrupt(f"No line-of-sight filters avalible for file {file_name}.")
+        if index not in self.line_of_sight_filters[file_name]:
+            raise KeyboardInterrupt(f"No line-of-sight filters avalible for LOS{index} in file {file_name}.")
+        if part_type not in self.line_of_sight_filters[file_name][index]:
+            raise KeyboardInterrupt(f"No line-of-sight filters avalible for {part_type.name} particles for LOS{index} in file {file_name}.")
+        return self.line_of_sight_filters[file_name][index][part_type]
+
     def __read(self) -> None:
-        """
-        Set field values from a file.
-        WARNING: this WILL overwrite any existing values!
-        """
-        assert self.__filepath is not None
-        with h5.File(self.__filepath, "r") as file:
-            self.version = VersionInfomation.from_string(file["Header"].attrs["Version"])
-            self.date = datetime.datetime.fromtimestamp((file["Header"].attrs["Date"])).date()
-            self.output_file = str(file["Header"].attrs["OutputFile"])
-            self.contra_file = str(file["Header"].attrs["SourceFile"])
-            self.snapshots_directory = str(file["Header"].attrs["SnapshotDirectory"])
-            if "LineOfSightDirectory" in file:
-                self.los_directory = str(file["Header"].attrs["LineOfSightDirectory"])
-            self.simulation_type = str(file["Header"].attrs["SimulationType"])
-            self.has_gas = bool(file["Header"].attrs["HasGas"])
-            self.has_stars = bool(file["Header"].attrs["HasStars"])
-            self.has_black_holes = bool(file["Header"].attrs["HasBlackHoles"])
-            self.has_dark_matter = bool(file["Header"].attrs["HasDarkMatter"])
+        with h5.File(self.filepath, "r") as file:
+            header = file["Header"]
+            snapshot_datasets = file["Snapshots"] if "Snapshots" in file else None
+            los_datasets = file["LinesOfSight"] if "LinesOfSight" in file else None
 
-            self.data = {}
-            for part_type in ParticleType.get_all():
-                if part_type.common_hdf5_name in file:
-                    d = file[part_type.common_hdf5_name]
-                    self.data[part_type] = ParticleFilter()
-                    self.data[part_type].particle_type = part_type
-                    self.data[part_type].redshift = d.attrs["Redshift"]
-                    self.data[part_type].snapshot_relitive_filepath = d.attrs["Snapshot"]
-                    self.data[part_type].allowed_ids = d["AllowedIDs"][:]
-                    self.data[part_type].snapshot_mask = d["SnapshotMask"][:]
-                    if "LinesOfSight" in d:
-                        l = d["LinesOfSight"]
-                        self.data[part_type].los_masks = {}
-                        for file_key in list(l.keys()):
-                            self.data[part_type].los_masks[file_key] = []
-                            for los_key in list(l[file_key].keys()):
-                                los = l[file_key][los_key]
-                                f = LOSFilter()
-                                f.particle_type = part_type
-                                f.redshift = los.attrs["Redshift"]
-                                f.file_number = los.attrs["FileNumber"]
-                                f.los_index = los.attrs["LineOfSightIndex"]
-                                f.los_relitive_filepath = los.attrs["LinesOfSightFile"]
-                                f.snapshot_filter_object = self.data[part_type]
-                                f.mask = los["Mask"]
-                                f.particle_ids = los["ParticleIDs"]
-                                self.data[part_type].los_masks[file_key].append(f)
+            version_number_from_file = VersionInfomation.from_string(header.attrs["Version"])
+            if version_number_from_file != VersionInfomation.from_string(VERSION):
+                Console.print_verbose_warning(f"Particle filter file at \"{self.filepath}\" reported creation from version {version_number_from_file} which is older than the current version({VersionInfomation.from_string(VERSION)}).\nThis file may not be compattible with this version and if loaded, may contain erronius data or cause errors.")
+            self.version = version_number_from_file
+            self.date = datetime.datetime.fromtimestamp((header.attrs["Date"])).date()
+            self.description = str(header.attrs["Description"])
+            self.contra_file = str(header.attrs["ContraFile"])
+            self.simulation_type = str(header.attrs["SimulationType"])
+            if snapshot_datasets is not None:
+                self.snapshots_directory = str(header.attrs["SnapshotsDirectory"])
+#                snapshot_redshifts = header["SnapshotRedshifts"][:]
+                snapshot_files = header["SnapshotFiles"][:]
+            if los_datasets is not None:
+                self.line_of_sight_directory = str(header.attrs["LinesOfSightDirectory"])
+#                los_redshifts = header["LineOfSightRedshifts"][:]
+                los_files = header["LineOfSightFiles"][:]
 
-    def save(self, filepath: str | None = None):
-        if filepath is None:
-            filepath = self.__filepath
-        if filepath is None:
-            raise ValueError("No filepath provided and no default filepath set.")
-        with h5.File(self.__filepath, "w") as file:
+            if snapshot_datasets is not None:
+#                for z in snapshot_redshifts:
+                for snap_file in snapshot_files:
+#                    z_float = float(z)
+#                    self.snapshot_filters[z_float] = {}
+                    self.snapshot_filters[snap_file] = {}
+#                    snap_part_datasets = snapshot_datasets[z]
+                    snap_part_datasets = snapshot_datasets[snap_file]
+                    part_types = [ParticleType(p) for p in snap_part_datasets["ParticleTypes"][:]]
+                    for part_type in part_types:
+                        part_type_dataset = snap_part_datasets[part_type.common_hdf5_name]
+#                        self.snapshot_filters[z_float][part_type] = SnapshotParticleFilter(
+                        self.snapshot_filters[snap_file][part_type] = SnapshotParticleFilter(
+                            particle_type = part_type,
+#                            redshift = z_float,
+                            redshift = snap_part_datasets.attrs["Redshift"],
+                            snapshot_number = snap_part_datasets.attrs["SnapshotNumber"],
+                            filepath = snap_part_datasets.attrs["SnapshotFile"],
+                            allowed_ids = part_type_dataset["ParticleIDs"][:],
+                            mask = part_type_dataset["Mask"][:]
+                        )
 
-            h = file.create_group("Header")
-            h.attrs["Version"] =  str(self.version)
-            h.attrs["Date"] = datetime.datetime(year = self.date.year, month = self.date.month, day = self.date.day).timestamp()
-            h.attrs["OutputFile"] = self.output_file
-            h.attrs["SourceFile"] = self.contra_file
-            h.attrs["SnapshotDirectory"] = self.snapshots_directory
-            h.attrs["LineOfSightDirectory"] = self.los_directory
-            h.attrs["SimulationType"] = self.simulation_type
-            h.attrs["HasGas"] = self.has_gas
-            h.attrs["HasStars"] = self.has_stars
-            h.attrs["HasBlackHoles"] = self.has_black_holes
-            h.attrs["HasDarkMatter"] = self.has_dark_matter
+            if los_datasets is not None:
+#                for z in los_redshifts:
+                for los_file in los_files:
+#                    z_float = float(z)
+#                    self.line_of_sight_filters[z_float] = {}
+                    self.line_of_sight_filters[los_file] = {}
+#                    los_file_group = los_datasets[z]
+                    los_file_group = los_datasets[los_file]
+                    los_indexes = los_file_group["Indexes"][:]
+                    for los_index in los_indexes:
+#                        self.line_of_sight_filters[z_float][los_index] = {}
+                        self.line_of_sight_filters[los_file][los_index] = {}
+                        los_part_datasets = los_file_group[f"LOS{los_index}"]
+                        part_types = [ParticleType(p) for p in los_part_datasets["ParticleTypes"][:]]
+                        for part_type in part_types:
+                            part_type_dataset = los_part_datasets[part_type.common_hdf5_name]
+#                            self.line_of_sight_filters[z_float][los_index][part_type] = LineOfSightParticleFilter(
+                            self.line_of_sight_filters[los_file][los_index][part_type] = LineOfSightParticleFilter(
+                                particle_type = part_type,
+#                                redshift = z_float,
+                                redshift = los_file_group.attrs["Redshift"],
+#                                file_name = los_file_group.attrs["LineOfSightFileName"],
+                                file_name = los_file,
+                                line_of_sight_index = los_part_datasets.attrs["LineOfSightIndex"],
+                                filepath = los_file_group.attrs["LineOfSightFile"],
+                                allowed_ids = part_type_dataset["ParticleIDs"][:],
+                                mask = part_type_dataset["Mask"][:]
+                            )
 
-            for part_type in self.data:
-                d = file.create_group(part_type.common_hdf5_name)
-                d.attrs["Redshift"] = self.data[part_type].redshift
-                d.attrs["Snapshot"] = self.data[part_type].snapshot_relitive_filepath
-                d.create_dataset("AllowedIDs", self.data[part_type].allowed_ids)
-                d.create_dataset("SnapshotMask", self.data[part_type].snapshot_mask)
-                if self.data[part_type].los_masks is not None:
-                    l = d.create_group("LinesOfSight")
-                    for los_file_key in self.data[part_type].los_masks:
-                        los_filters = l.create_group(los_file_key)
-                        for i in range(len(self.data[part_type].los_masks[los_file_key])):
-                            f = self.data[part_type].los_masks[i]
-                            los = los_filters.create_group(str(i))
-                            los.attrs["Redshift"] = f.redshift
-                            los.attrs["FileNumber"] = f.file_number
-                            los.attrs["LineOfSightIndex"] = f.los_index
-                            los.attrs["LinesOfSightFile"] = f.los_relitive_filepath
-                            los.create_dataset("Mask", f.mask)
-                            los.create_dataset("ParticleIDs", f.particle_ids)
+    def save(self, filepath: str|None = None) -> None:
+        writing_for_first_time = False
+        if not self.__writable and filepath is None:
+            raise FileExistsError("Unable to save ParticleFilterFile object as a file already exists at the default filepath.\nRename or delete the existing file first, or specify a new filename.")
+        elif filepath is not None:
+            if os.path.exists(filepath):
+                raise FileExistsError(f"Unable to save ParticleFilterFile object as a file already exists at \"{filepath}\".\nRename or delete the existing file first, or specify a new filename.")
+        else:
+            writing_for_first_time = True
+            filepath = self.filepath
+
+        with h5.File(filepath, "w") as file:
+            header = file.create_group("Header")
+            if self.has_snapshots:
+                snapshot_datasets = file.create_group("Snapshots")
+            if self.has_lines_of_sight:
+                los_datasets = file.create_group("LinesOfSight")
+
+            header.attrs["Version"] =  str(self.version)
+            header.attrs["Date"] = datetime.datetime(year = self.date.year, month = self.date.month, day = self.date.day).timestamp()
+            header.attrs["Description"] = self.description
+            header.attrs["ContraFile"] = self.contra_file
+            header.attrs["SimulationType"] = self.simulation_type
+            if self.has_snapshots:
+                header.attrs["SnapshotsDirectory"] = self.snapshots_directory
+#                header.create_dataset("SnapshotRedshifts", data = np.array([str(v) for v in self.get_snapshot_redshifts()], dtype = object), dtype = h5.special_dtype(vlen = str))
+                header.create_dataset("SnapshotFiles", data = np.array([str(v) for v in self.get_snapshot_file_names()], dtype = object), dtype = h5.special_dtype(vlen = str))
+            if self.has_lines_of_sight:
+                header.attrs["LinesOfSightDirectory"] = self.line_of_sight_directory
+#                header.create_dataset("LineOfSightRedshifts", data = np.array([str(v) for v in self.get_line_of_sight_redshifts()], dtype = object), dtype = h5.special_dtype(vlen = str))
+                header.create_dataset("LineOfSightFiles", data = np.array([str(v) for v in self.get_line_of_sight_file_names()], dtype = object), dtype = h5.special_dtype(vlen = str))
+
+            if self.has_snapshots:
+#                for z in self.get_snapshot_redshifts():
+                for snap_file_name in self.get_snapshot_file_names():
+#                    z_str = str(z)
+#                    snap_dataset = snapshot_datasets.create_group(z_str)
+                    snap_dataset = snapshot_datasets.create_group(snap_file_name)
+#                    snap_dataset.attrs["SnapshotNumber"] = self.snapshot_filters[z][self.get_snapshot_particle_types(z)[0]].snapshot_number
+                    snap_dataset.attrs["SnapshotNumber"] = self.snapshot_filters[snap_file_name][self.get_snapshot_particle_types(snap_file_name)[0]].snapshot_number
+#                    snap_dataset.attrs["SnapshotFile"] = self.snapshot_filters[z][self.get_snapshot_particle_types(z)[0]].filepath
+                    snap_dataset.attrs["SnapshotFile"] = self.snapshot_filters[snap_file_name][self.get_snapshot_particle_types(snap_file_name)[0]].filepath
+                    snap_dataset.attrs["Redshift"] = self.snapshot_filters[snap_file_name][self.get_snapshot_particle_types(snap_file_name)[0]].redshift
+#                    snap_dataset.create_dataset("ParticleTypes", data = np.array([p.value for p in self.get_snapshot_particle_types(z)], dtype = int))
+                    snap_dataset.create_dataset("ParticleTypes", data = np.array([p.value for p in self.get_snapshot_particle_types(snap_file_name)], dtype = np.int8))
+#                    for part_type in self.get_snapshot_particle_types(z):
+                    for part_type in self.get_snapshot_particle_types(snap_file_name):
+                        part_type_dataset = snap_dataset.create_group(part_type.common_hdf5_name)
+#                        part_type_dataset.attrs["TotalNumberOfParticles"] = self.snapshot_filters[z][part_type].mask.shape[0]
+#                        part_type_dataset.attrs["NumberOfParticles"] = self.snapshot_filters[z][part_type].mask.sum()
+#                        part_type_dataset.create_dataset("ParticleIDs", data = self.snapshot_filters[z][part_type].allowed_ids)
+#                        part_type_dataset.create_dataset("Mask", data = self.snapshot_filters[z][part_type].mask)
+                        part_type_dataset.attrs["TotalNumberOfParticles"] = self.snapshot_filters[snap_file_name][part_type].mask.shape[0]
+                        part_type_dataset.attrs["NumberOfParticles"] = self.snapshot_filters[snap_file_name][part_type].mask.sum()
+                        part_type_dataset.create_dataset("ParticleIDs", data = self.snapshot_filters[snap_file_name][part_type].allowed_ids)
+                        part_type_dataset.create_dataset("Mask", data = self.snapshot_filters[snap_file_name][part_type].mask)
+
+            if self.has_lines_of_sight:
+#                for z in self.get_line_of_sight_redshifts():
+                for los_file_name in self.get_line_of_sight_file_names():
+#                    z_str = str(z)
+#                    los_file_dataset = los_datasets.create_group(z_str)
+#                    los_file_dataset.attrs["LineOfSightFileName"] = self.line_of_sight_filters[z][0][self.get_line_of_sight_particle_types(z, 0)[0]].file_name
+#                    los_file_dataset.attrs["LineOfSightFile"] = self.line_of_sight_filters[z][0][self.get_line_of_sight_particle_types(z, 0)[0]].filepath
+#                    los_indexes = list(range(self.get_number_of_lines_of_sight(z)))
+                    los_file_dataset = los_datasets.create_group(los_file_name)
+#                    los_file_dataset.attrs["LineOfSightFileName"] = self.line_of_sight_filters[los_file_name][0][self.get_line_of_sight_particle_types(los_file_name, 0)[0]].file_name
+                    los_file_dataset.attrs["LineOfSightFile"] = self.line_of_sight_filters[los_file_name][0][self.get_line_of_sight_particle_types(los_file_name, 0)[0]].filepath
+                    los_file_dataset.attrs["Redshift"] = self.line_of_sight_filters[los_file_name][0][self.get_line_of_sight_particle_types(los_file_name, 0)[0]].redshift
+                    los_indexes = list(range(self.get_number_of_lines_of_sight(los_file_name)))
+                    los_file_dataset.create_dataset("Indexes", data = np.array(los_indexes, dtype = int))
+                    for los_index in los_indexes:
+                        los_dataset = los_file_dataset.create_group(f"LOS{los_index}")
+#                        los_dataset.attrs["LineOfSightIndex"] = self.line_of_sight_filters[z][0][self.get_line_of_sight_particle_types(z, 0)[0]].line_of_sight_index
+#                        los_dataset.create_dataset("ParticleTypes", data = np.array([p.value for p in self.get_line_of_sight_particle_types(z, los_index)], dtype = int))
+                        los_dataset.attrs["LineOfSightIndex"] = self.line_of_sight_filters[los_file_name][0][self.get_line_of_sight_particle_types(los_file_name, 0)[0]].line_of_sight_index
+                        los_dataset.create_dataset("ParticleTypes", data = np.array([p.value for p in self.get_line_of_sight_particle_types(los_file_name, los_index)], dtype = np.int8))
+#                        for part_type in self.get_line_of_sight_particle_types(z, los_index):
+                        for part_type in self.get_line_of_sight_particle_types(los_file_name, los_index):
+                            part_type_dataset = los_dataset.create_group(part_type.common_hdf5_name)
+#                            part_type_dataset.attrs["TotalNumberOfParticles"] = self.line_of_sight_filters[z][los_index][part_type].mask.shape[0]
+#                            part_type_dataset.attrs["NumberOfParticles"] = self.line_of_sight_filters[z][los_index][part_type].mask.sum()
+#                            part_type_dataset.create_dataset("ParticleIDs", data = self.line_of_sight_filters[z][los_index][part_type].allowed_ids)
+#                            part_type_dataset.create_dataset("Mask", data = self.line_of_sight_filters[z][los_index][part_type].mask)
+                            part_type_dataset.attrs["TotalNumberOfParticles"] = self.line_of_sight_filters[los_file_name][los_index][part_type].mask.shape[0]
+                            part_type_dataset.attrs["NumberOfParticles"] = self.line_of_sight_filters[los_file_name][los_index][part_type].mask.sum()
+                            part_type_dataset.create_dataset("ParticleIDs", data = self.line_of_sight_filters[los_file_name][los_index][part_type].allowed_ids)
+                            part_type_dataset.create_dataset("Mask", data = self.line_of_sight_filters[los_file_name][los_index][part_type].mask)
+
+        if writing_for_first_time:
+            # Mark the default filepath as being written to
+            self.__writable = False

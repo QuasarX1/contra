@@ -144,7 +144,7 @@ class ArrayReorder(Callable):
             Console.print_verbose_warning("ArrayReorder: call got both an output array and default value.\nDangerous behaviour as this may overwrite elements!")
 
         if output_array is None:
-            output_array = np.empty(shape = self.__destination_filter_length)
+            output_array = np.empty(shape = self.__destination_filter_length, dtype = source_data.dtype)
 
         if default_value is not None:
             output_array[~self.__destination_filter] = default_value

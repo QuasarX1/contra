@@ -27,14 +27,24 @@ class SnapshotSWIFT(SnapshotBase):
         return sw.load(filepath)
 
     def __init__(self, filepath: str) -> None:
+        Console.print_debug(f"Loading SWIFT snapshot from: {filepath}")
+
+        pattern = re.compile(r'(?P<basename>[^/]+?)(?P<file_number>\d+)(?:\.(?P<parallel_id>(?:[1-9]\d*|0)))?\.(?P<extension>\w+)$')
+        match = pattern.match(os.path.split(filepath)[1])
+        if not match:
+            raise ValueError(f"Snapshot file name \"{os.path.split(filepath)[1]}\" does not conform to the naming scheme of a SWIFT snapshot. SWIFT snapshot files must have a clear snapshot number component.")
+        snap_num = match.group("file_number")
+
         self.__file_object = SnapshotSWIFT.make_reader_object(filepath)
 
         self.__cached_dm_smoothing_lengths: Union[unyt_array, None] = None
 
         super().__init__(
             filepath = filepath,
+            number = snap_num,
             redshift = float(self.__file_object.metadata.header["Redshift"][0]),
             hubble_param = float(self.__file_object.metadata.cosmology["h"][0]),
+            omega_baryon = float(self.__file_object.metadata.cosmology["Omega_b"][0]),
             expansion_factor = float(self.__file_object.metadata.header["Scale-factor"][0]),
             box_size = self.__file_object.metadata.boxsize
         )
@@ -69,31 +79,37 @@ class SnapshotSWIFT(SnapshotBase):
                     self.__cached_dm_smoothing_lengths = unyt_array(np.zeros(n_part), units = unit)
                     for i in range(0, n_part, chunk_size):
                         selected_slice = slice(i, max(i + chunk_size, n_part))
-                        self.__cached_dm_smoothing_lengths[selected_slice] = unyt_array(tree.query(dm_part_positions[selected_slice], k = N_NABOURS)[0][:, N_NABOURS - 1], units = unit)
+                        self.__cached_dm_smoothing_lengths[selected_slice] = unyt_array(tree.query(dm_part_positions[selected_slice], k = N_NABOURS)[0][:, N_NABOURS - 1], units = unit).to("Mpc")
             return self.__cached_dm_smoothing_lengths
         else:
-            return particle_type.get_SWIFT_dataset(self.__file_object).smoothing_lengths
+            return particle_type.get_SWIFT_dataset(self.__file_object).smoothing_lengths.to("Mpc")
 
     def _get_masses(self, particle_type: ParticleType) -> unyt_array:
-        return particle_type.get_SWIFT_dataset(self.__file_object).masses
+        return particle_type.get_SWIFT_dataset(self.__file_object).masses.to("Msun")
 
     def get_black_hole_subgrid_masses(self) -> unyt_array:
-        return self.__file_object.black_holes.subgrid_masses
+        return self.__file_object.black_holes.subgrid_masses.to("Msun")
 
     def get_black_hole_dynamical_masses(self) -> unyt_array:
-        return self.__file_object.black_holes.dynamical_masses
+        return self.__file_object.black_holes.dynamical_masses.to("Msun")
 
     def get_positions(self, particle_type: ParticleType) -> unyt_array:
-        return particle_type.get_SWIFT_dataset(self.__file_object).coordinates
+        return particle_type.get_SWIFT_dataset(self.__file_object).coordinates.to("Mpc")
 
     def get_velocities(self, particle_type: ParticleType) -> unyt_array:
-        return particle_type.get_SWIFT_dataset(self.__file_object).velocities
+        return particle_type.get_SWIFT_dataset(self.__file_object).velocities.to("km/s")
 
     def _get_sfr(self, particle_type: ParticleType) -> unyt_array:
-        return particle_type.get_SWIFT_dataset(self.__file_object).star_formation_rates
+        return particle_type.get_SWIFT_dataset(self.__file_object).star_formation_rates.to("Msun/yr")
 
     def _get_metalicities(self, particle_type: ParticleType) -> unyt_array:
-        return particle_type.get_SWIFT_dataset(self.__file_object).metal_mass_fraction
+        return particle_type.get_SWIFT_dataset(self.__file_object).metal_mass_fractions
+
+    def _get_densities(self, particle_type: ParticleType) -> unyt_array:
+        return particle_type.get_SWIFT_dataset(self.__file_object).densities.to("Msun/Mpc**3")
+
+    def _get_temperatures(self, particle_type: ParticleType) -> unyt_array:
+        return particle_type.get_SWIFT_dataset(self.__file_object).temperatures.to("K")
     
     @staticmethod
     def generate_filepaths(
