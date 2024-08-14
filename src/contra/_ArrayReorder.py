@@ -144,7 +144,8 @@ class ArrayReorder(Callable):
             Console.print_verbose_warning("ArrayReorder: call got both an output array and default value.\nDangerous behaviour as this may overwrite elements!")
 
         if output_array is None:
-            output_array = np.empty(shape = self.__destination_filter_length, dtype = source_data.dtype)
+#            output_array = np.empty(shape = self.__destination_filter_length, dtype = source_data.dtype)
+            output_array = np.empty(shape = (self.__destination_filter_length, *source_data.shape[1:]), dtype = source_data.dtype)
 
         if default_value is not None:
             output_array[~self.__destination_filter] = default_value
@@ -316,7 +317,7 @@ class ArrayMapping(object):
             Console.print_verbose_warning("ArrayMapping: call got both an output array and default value.\nDangerous behaviour as this may overwrite elements!")
 
         if output_array is None:
-            output_array = np.empty(shape = self.__output_length)
+            output_array = np.empty(shape = (self.__output_length, *source_data.shape[1:]), dtype = source_data.dtype)
 
         if default_value is not None:
             output_array[~self.__output_mask] = default_value

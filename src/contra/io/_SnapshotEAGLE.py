@@ -93,6 +93,140 @@ class SnapshotEAGLE(SnapshotBase):
     def _file_object(self) -> EagleSnapshot:
         return self.__file_object
     
+    def restrict_data_propper_loading_region(self, min_x: float|unyt_quantity|None = None, max_x: float|unyt_quantity|None = None, min_y: float|unyt_quantity|None = None, max_y: float|unyt_quantity|None = None, min_z: float|unyt_quantity|None = None, max_z: float|unyt_quantity|None = None, clear_existing_region = True) -> None:
+        self.restrict_data_comoving_loading_region(
+            min_x / self.a if min_x is not None else None,
+            max_x / self.a if max_x is not None else None,
+            min_y / self.a if min_y is not None else None,
+            max_y / self.a if max_y is not None else None,
+            min_z / self.a if min_z is not None else None,
+            max_z / self.a if max_z is not None else None,
+            clear_existing_region
+        )
+
+    def restrict_data_comoving_loading_region(self, min_x: float|unyt_quantity|None = None, max_x: float|unyt_quantity|None = None, min_y: float|unyt_quantity|None = None, max_y: float|unyt_quantity|None = None, min_z: float|unyt_quantity|None = None, max_z: float|unyt_quantity|None = None, clear_existing_region = True) -> None:
+        # Get the conversion factor to go from comoving to h-less comoving
+        # (a.k.a., multiply inputs by this value!)
+        conversion_factor = 1 / ((self.hubble_param ** self.__length_h_exp) * self.__length_cgs_conversion_factor)
+
+        # Convert values so each field is filled with a floating point value
+        if min_x is not None:
+            if not isinstance(min_x, unyt_quantity):
+                min_x = unyt_quantity(min_x, units = "Mpc", dtype = float)
+            min_x = min_x.to("cm").value * conversion_factor
+        else:
+            min_x = 0.0
+        if max_x is not None:
+            if not isinstance(max_x, unyt_quantity):
+                max_x = unyt_quantity(max_x, units = "Mpc", dtype = float)
+            max_x = max_x.to("cm").value * conversion_factor
+        else:
+            max_x = self.__box_size_internal_units
+        if min_y is not None:
+            if not isinstance(min_y, unyt_quantity):
+                min_y = unyt_quantity(min_y, units = "Mpc", dtype = float)
+            min_y = min_y.to("cm").value * conversion_factor
+        else:
+            min_y = 0.0
+        if max_y is not None:
+            if not isinstance(max_y, unyt_quantity):
+                max_y = unyt_quantity(max_y, units = "Mpc", dtype = float)
+            max_y = max_y.to("cm").value * conversion_factor
+        else:
+            max_y = self.__box_size_internal_units
+        if min_z is not None:
+            if not isinstance(min_z, unyt_quantity):
+                min_z = unyt_quantity(min_z, units = "Mpc", dtype = float)
+            min_z = min_z.to("cm").value * conversion_factor
+        else:
+            min_z = 0.0
+        if max_z is not None:
+            if not isinstance(max_z, unyt_quantity):
+                max_z = unyt_quantity(max_z, units = "Mpc", dtype = float)
+            max_z = max_z.to("cm").value * conversion_factor
+        else:
+            max_z = self.__box_size_internal_units
+
+        # Check for regions where the min and max values are the wrong way around - i.e. wrap around the box
+        # Correct these to allow negitive values (to be handled later)
+        if min_x > max_x:
+            min_x = np.mod(min_x, self.__box_size_internal_units) # Move both endpoints inside the box
+            max_x = np.mod(max_x, self.__box_size_internal_units) # Move both endpoints inside the box
+            if min_x > max_x:                                     # If the endpoints are still the wrong way around:
+                min_y = min_y - self.__box_size_internal_units    #     Move the min point into negitive space so that it gets wrapped later
+        if min_y > max_y:
+            min_y = np.mod(min_y, self.__box_size_internal_units)
+            max_y = np.mod(max_y, self.__box_size_internal_units)
+            if min_y > max_y:
+                min_y = min_y - self.__box_size_internal_units
+        if min_z > max_z:
+            min_z = np.mod(min_z, self.__box_size_internal_units)
+            max_z = np.mod(max_z, self.__box_size_internal_units)
+            if min_z > max_z:
+                min_z = min_z - self.__box_size_internal_units
+
+        # Check for regions larger than the box
+        #     Truncate these to be the sixe of the box in that dimension
+        # Also check for regions where the maximum is outside the box
+        #     Shift these to the other side of the box (reduces wrapping conditions that need checking later)
+        if self.__box_size_internal_units < max_x:
+            if min_x < 0.0 or min_x + self.__box_size_internal_units < max_x:
+                min_x = 0.0
+                max_x = self.__box_size_internal_units
+            else:
+                min_x = min_x - self.__box_size_internal_units
+                max_x = max_x - self.__box_size_internal_units
+        if self.__box_size_internal_units < max_y:
+            if min_y < 0.0 or min_y + self.__box_size_internal_units < max_y:
+                min_y = 0.0
+                max_y = self.__box_size_internal_units
+            else:
+                min_y = min_y - self.__box_size_internal_units
+                max_y = max_y - self.__box_size_internal_units
+        if self.__box_size_internal_units < max_z:
+            if min_z < 0.0 or min_z + self.__box_size_internal_units < max_z:
+                min_z = 0.0
+                max_z = self.__box_size_internal_units
+            else:
+                min_z = min_z - self.__box_size_internal_units
+                max_z = max_z - self.__box_size_internal_units
+
+        # Store the chunk as a tuple in a list
+        # This will be used to break up the chunk if it crosses a boundary
+        wrapped_region_chunks: List[Tuple[float, float, float, float, float, float]] = [
+            (min_x, max_x, min_y, max_y, min_z, max_z)
+        ]
+        copy_region_chunks: List[Tuple[float, float, float, float, float, float]]
+
+        # Check for boundarys being crossed by the initial region and mutate the existing region(s) while creating new regions for the offending space
+        # Only need to check 0 boundary as above changes should mandate the max value be within the box
+        if min_x < 0.0:
+            copy_region_chunks = wrapped_region_chunks.copy()
+            wrapped_region_chunks = []
+            for region in copy_region_chunks:
+                wrapped_region_chunks.append((0.0, *region[1:]))
+                wrapped_region_chunks.append((self.__box_size_internal_units + region[0], self.__box_size_internal_units, *region[2:]))
+        if min_y < 0.0:
+            copy_region_chunks = wrapped_region_chunks.copy()
+            wrapped_region_chunks = []
+            for region in copy_region_chunks:
+                wrapped_region_chunks.append((*region[:2], 0.0, *region[3:]))
+                wrapped_region_chunks.append((*region[:2], self.__box_size_internal_units + region[2], self.__box_size_internal_units, *region[4:]))
+        if min_z < 0.0:
+            copy_region_chunks = wrapped_region_chunks.copy()
+            wrapped_region_chunks = []
+            for region in copy_region_chunks:
+                wrapped_region_chunks.append((*region[:4], 0.0, region[5]))
+                wrapped_region_chunks.append((*region[:4], self.__box_size_internal_units + region[4], self.__box_size_internal_units))
+
+        if clear_existing_region:
+            self.__file_object.clear_selection()
+        for region in wrapped_region_chunks:
+            if region[0] == region[1] or region[2] == region[3] or region[4] == region[5]:
+                continue # If any of the axes are of 0 length, don't bother
+                         # Should only occour when a region is specified adjacent to but entierly outside of the box
+            self.__file_object.select_region(*region)
+    
     def make_cgs_data(self, cgs_units: str, data: np.ndarray, h_exp: float, cgs_conversion_factor: float, a_exp: float = 0.0) -> unyt_array:
         """
         Convert raw data to a unyt_array object with the correct units.

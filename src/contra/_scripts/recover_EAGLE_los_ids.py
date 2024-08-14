@@ -16,8 +16,9 @@ from multiprocessing import shared_memory
 import ctypes
 import time
 from matplotlib import pyplot as plt
+from unyt import unyt_quantity
 
-ENABLE_WRAPPED_INTERPOLATION = True
+
 
 class PartialZip(Iterator):
     def __init__(self, iterable_indexes: Iterable[int], /, *items: Union[Iterable, Any], strict: bool = False):
@@ -81,6 +82,13 @@ def main():
                 conversion_function = float,
                 default_value = 0.001
             ),
+            ScriptWrapper.OptionalParam[float](
+                name = "column-width-multiplier",
+                short_name = "w",
+                description = "Multiplier for the width of the column of particles around the line-of-sight from which to search for matches.\nWhen using the default data-loading scheme, the width is axis-dependant and is applied to the estimated positions of particles. When using the memory-efficient data-loading scheme, the width uses twice the greatest distance in any axis and is applied to the raw particle data and NOT the estimated positions!\nThis value ought to be greater than 1.0 to account for particle movement.\nThe initial width is determined by the distribution of particle positions in the line-of-sight data.\nDefault value is 2.0",
+                conversion_function = float,
+                default_value = 2.0
+            ),
             ScriptWrapper.OptionalParam[str](
                 name = "do-file",
                 short_name = "f",
@@ -113,54 +121,74 @@ def main():
                 description = "Plot statistics for selected particles in the specified sightline.\nOnly valid when running on a single sightline.",
                 requirements = ["do-index"],
                 conflicts = ["do-particle-index"]
+            ),
+            ScriptWrapper.Flag(
+                name = "efficient-memory-usage",
+                short_name = "m",
+                sets_param = "use_memory_efficient_data_loading",
+                description = "Load data using a method that prioritises memory efficiency.\nThis may be required when targeting large simulation volumes to avoid needing to load the entire volume.\nNote: this may be SLOWER if running on systems that are capable of loading the whole volume if there are a large number of lines-of-sight!",
             )
         )
-    ).run_with_async(__main)
+    ).run(__main)
 
 
 
-async def __main(
+def __main(
             output_file: str,
             data_directory: str,
             los_directory: str,
             n_processes: int,
             fractional_los_quantity_error: float,
+            column_width_multiplier: float,
             selected_file: str | None,
             selected_los_index: int | None,
             selected_los_particle_index: int | None,
             force_selection: bool,
-            plot_selection_stats: bool
+            plot_selection_stats: bool,
+            use_memory_efficient_data_loading: bool
           ) -> None:
+    
+    if not os.path.exists(los_directory):
+        Console.print_error(f"Line-of-sight file directory \"{los_directory}\" does not exist.")
+        Console.print_info("Terminating...")
+        return
 
     # Get the line of sight filepaths in redshift order (assending z)
-    los_files = [os.path.join(los_directory, file) for file in list(*os.walk(los_directory))[2] if file[:8] == "part_los"]
-#    Console.print_debug(los_files)
-#    return
-    los_files.sort(key = lambda v: float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 1)[0]))
+
+    los_files = LineOfSightFileEAGLE.get_files(los_directory)
+#    los_files = [os.path.join(los_directory, file) for file in list(*os.walk(los_directory))[2] if file[:8] == "part_los"]
+#    los_files.sort(key = lambda v: float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 1)[0]))
+
+    # Check that a specified los file (if any) is avalible
 
     if selected_file is not None:
         selected_file = os.path.join(los_directory, selected_file)
         if selected_file not in los_files:
             Console.print_error("A specific Line of Sight file was specified ({selected_file}) but does not exist at location \"{los_directory}\".")
+            Console.print_info("Terminating...")
             return
 
     # Get the snipshot filepaths in redshift order (assending z)
+
     snipshot_files = [os.path.join(folder, files[0].rsplit(".", maxsplit = 2)[0] + ".0.hdf5") for (folder, _, files) in os.walk(data_directory) if folder.rsplit(os.path.sep, maxsplit = 1)[1][:8] == "snipshot"]
     snipshot_redshifts = [float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 2)[0].replace("p", ".")) for v in snipshot_files]
     snipshot_files.sort(key = lambda v: float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 2)[0].replace("p", ".")))
     snipshot_redshifts.sort()
 
     # Create lookups for the snipshot information by snipshot number
+
     snapshot_redshifts: Dict[int, float] = { int(file.rsplit(os.path.sep, maxsplit = 1)[1].split("_")[1]) : snipshot_redshifts[i] for i, file in enumerate(snipshot_files) }
     snapshots: Dict[int, SnapshotEAGLE] = {}
     snap_expansion_factors: Dict[int, float] = {}
     snapshot_filepaths_by_number: Dict[int, str] = { int(file.rsplit(os.path.sep, maxsplit = 1)[1].split("_")[1]) : file for file in snipshot_files }
 
     # Get the snipshot numbers in assending order (decending z)
+
     snap_nums = list(snapshot_redshifts.keys())
     snap_nums.sort()
 
     # Define a way to find the two snipshots that lie either side of a particular redshift value
+
     def find_neighbouring_snapshots(z: float) -> Tuple[int, int]:
         if z > snapshot_redshifts[snap_nums[0]] or z < snapshot_redshifts[snap_nums[-1]]:
             raise ValueError(f"Redshift {z} outside of redshift range of avalible data.")
@@ -170,6 +198,7 @@ async def __main(
         return (lower_redshift_snap_num - 1, lower_redshift_snap_num)
 
     # Create output file
+
     if not os.path.exists(output_file):
         h5.File(output_file, "w").close()
         complete_files = []
@@ -178,13 +207,21 @@ async def __main(
             complete_files = list(file)
 
     # Itterate over one line-of-sight file at a time
+    # If a single file is selected, just use that file only
+
     for f in los_files if selected_file is None else (selected_file, ):
+
+        # Get an object of reading los data
+
         sightline_file = LineOfSightFileEAGLE(f)
+
+        # Identify the file name (used for saving data)
 
         output_file_group_name = f.rsplit(os.path.sep, maxsplit = 1)[-1]
 
-        # Skip any completed files (allows for restarting)
-        # This will confirm that all sightlines have been completed and will retain any sightlines already completed
+        # Skip any completed files (allows for restarting) and identify the number of complete lines if not all are done
+        # This will retain any sightlines already completed
+
         completed_sightlines = 0
         if output_file_group_name in complete_files:
             with h5.File(output_file, "r") as file:
@@ -195,28 +232,40 @@ async def __main(
             with h5.File(output_file, "a") as file:
                 file.create_group(output_file_group_name)
 
+        # State which file is being targeted
+
         Console.print_info(output_file_group_name)
 
+        # Identify which lines of sight need to be computed for this file
+
+        do_sightlines: Iterable
         if selected_los_index is None:
+            # Do only incomplete lines
             do_sightlines = range(completed_sightlines, len(sightline_file))
         else:
+            # Do only the specified los, but first check if we are allowed to overwrite it should it already exist (but only if any data will be written)!
             min_valid_sightline = 0 if force_selection else completed_sightlines
             if selected_los_particle_index is None and (selected_los_index < min_valid_sightline or selected_los_index >= len(sightline_file)):
                 Console.print_error(f"Selected sightline ({selected_los_index}) outside of valid range (inclusive) {min_valid_sightline} -> {len(sightline_file) - 1}.\nTo re-compute a sightline for which there is already data, use the --force-selection flag.")
                 return
             do_sightlines = (selected_los_index, )
 
+        # Are we running a test search on a specific particle?
+
         if selected_los_particle_index is not None:
+            # Check the particle index is valid
             n_avalible_particles = sightline_file.get_sightline_length(do_sightlines[0])
             if (selected_los_particle_index >= 0 and selected_los_particle_index >= n_avalible_particles) or (selected_los_particle_index < 0 and -selected_los_particle_index > n_avalible_particles):
                 Console.print_error(f"Selected sightline particle index ({selected_los_particle_index}) out of range for sightline ({selected_los_index}) with {n_avalible_particles} particles.")
                 return
 
         # Get the numbers of the snipshots that border the line of sight file's redshift
+
         snap_num_initial, snap_num_final = find_neighbouring_snapshots(sightline_file.z)
 
         # Create EAGLE snapshot reader objects
         # These are cached to avoid unnessessary initilisation if the same snipshot is used multiple times
+
         if snap_num_initial not in snapshots:
             snapshots[snap_num_initial] = SnapshotEAGLE(snapshot_filepaths_by_number[snap_num_initial])
             snap_expansion_factors[snap_num_initial] = snapshots[snap_num_initial].a
@@ -226,67 +275,69 @@ async def __main(
         box_size = snapshots[snap_num_final].box_size[0].value
         half_box_size = box_size / 2
 
-        n_remaining_snip_particles = snapshots[snap_num_final].number_of_particles(ParticleType.gas)
+        # Are the extra interpolated fields needed?
 
-        low_z_snipshot_ids                  = SharedArray.create(n_remaining_snip_particles,      np.int64  , name = "low_z_snipshot_ids")
-        high_z_snipshot_particle_data       = SharedArray.create((n_remaining_snip_particles, 5), np.float64, name = "high_z_snipshot_particle_data")
-        interpolated_snipshot_particle_data = SharedArray.create((n_remaining_snip_particles, 5), np.float64, name = "interpolated_snipshot_particle_data")
-        low_z_snipshot_particle_data        = SharedArray.create((n_remaining_snip_particles, 5), np.float64, name = "low_z_snipshot_particle_data")
+        get_extra_data = plot_selection_stats or selected_los_particle_index is not None
 
-        # Determine snipshot data reorder
-        initial_ids = snapshots[snap_num_initial].get_IDs(ParticleType.gas)
-        final_ids = snapshots[snap_num_final].get_IDs(ParticleType.gas)
-        order_by = ArrayReorder.create(initial_ids, final_ids)
+        if not use_memory_efficient_data_loading: # Load all relevant fields into memory and interpolate
+            # This method avoids the need to read snapshot data and perform interpolation for each los
+            # This comes at the cost of needing to load the entirety of all relivent snipshot fields into memory
 
-        # Read snipshot particle data into shared memory
-        high_z_snipshot_all_particle_positions = snapshots[snap_num_initial].get_positions(ParticleType.gas).to("Mpc").value
-        high_z_snipshot_particle_data.data[:, 0] = order_by(high_z_snipshot_all_particle_positions[:, 0])
-        high_z_snipshot_particle_data.data[:, 1] = order_by(high_z_snipshot_all_particle_positions[:, 1])
-        high_z_snipshot_particle_data.data[:, 2] = order_by(high_z_snipshot_all_particle_positions[:, 2])
-        high_z_snipshot_particle_data.data[:, 3] = order_by(snapshots[snap_num_initial].get_masses(ParticleType.gas).to("Msun").value)
-        high_z_snipshot_particle_data.data[:, 4] = order_by(snapshots[snap_num_initial].get_metalicities(ParticleType.gas).value)
-        low_z_snipshot_ids.data[:] = final_ids
-        low_z_snipshot_particle_data.data[:, :3] = snapshots[snap_num_final].get_positions(ParticleType.gas).to("Mpc").value
-        low_z_snipshot_particle_data.data[:, 3]  = snapshots[snap_num_final].get_masses(ParticleType.gas).to("Msun").value
-        low_z_snipshot_particle_data.data[:, 4]  = snapshots[snap_num_final].get_metalicities(ParticleType.gas).value
+            # The number of gas particles will decrease over time,
+            # so find the numberof particles that will appear in both snipshots
 
-#        Console.print_debug(((final_ids - order_by(initial_ids)) != 0).sum())
-#        Console.print_debug(((low_z_snipshot_particle_data.data[:, 3] - high_z_snipshot_particle_data.data[:, 3]) < 0).sum())
-#        Console.print_debug(((low_z_snipshot_particle_data.data[:, 4] - high_z_snipshot_particle_data.data[:, 4]) < 0).sum())
-#        invalid_particles_mask = (low_z_snipshot_particle_data.data[:, 4] - high_z_snipshot_particle_data.data[:, 4]) < 0
-#        invalid_indexes = np.where(invalid_particles_mask)[0]
-#        print(flush = True)
-#        for i in invalid_indexes[:20]:
-#            Console.print_debug("Index:", i)
-#            Console.print_debug("ID:", order_by(initial_ids)[i], "->", final_ids[i])
-#            Console.print_debug("Mass:", high_z_snipshot_particle_data.data[i, 3], "->", low_z_snipshot_particle_data.data[i, 3])
-#            Console.print_debug("Metallicity:", high_z_snipshot_particle_data.data[i, 4], "->", low_z_snipshot_particle_data.data[i, 4])
-#            Console.print_debug("Metallicity change:", low_z_snipshot_particle_data.data[i, 4] - high_z_snipshot_particle_data.data[i, 4])
-#            Console.print_debug("Metallicity change:", 100 * (low_z_snipshot_particle_data.data[i, 4] - high_z_snipshot_particle_data.data[i, 4]) / high_z_snipshot_particle_data.data[i, 4], "%")
-#            print(flush = True)
-#        percentage_changes = 100 * np.abs(low_z_snipshot_particle_data.data[invalid_indexes, 4] - high_z_snipshot_particle_data.data[invalid_indexes, 4]) / high_z_snipshot_particle_data.data[invalid_indexes, 4]
-#        Console.print_debug("Min absolute metallicity change:", percentage_changes.min(), "%")
-#        Console.print_debug("Max absolute metallicity change:", percentage_changes.max(), "%")
-#        Console.print_debug("Mean absolute metallicity change:", percentage_changes.mean(), "%")
-#        Console.print_debug("Median absolute metallicity change:", np.median(percentage_changes), "%")
-#        return
+            n_remaining_snip_particles = snapshots[snap_num_final].number_of_particles(ParticleType.gas)
 
-        # Interpolate snipshot data to match line-of-sight redshift
-        interp_fraction = (sightline_file.a - snap_expansion_factors[snap_num_initial]) / (snap_expansion_factors[snap_num_final] - snap_expansion_factors[snap_num_initial])
-        interpolated_snipshot_particle_data.data[:, :] = high_z_snipshot_particle_data.data * (1 - interp_fraction) + (low_z_snipshot_particle_data.data * interp_fraction)
+            low_z_snipshot_ids                  = SharedArray.create(n_remaining_snip_particles,      np.int64  , name = "low_z_snipshot_ids")
+            high_z_snipshot_particle_data       = SharedArray.create((n_remaining_snip_particles, 5), np.float64, name = "high_z_snipshot_particle_data")
+            interpolated_snipshot_particle_data = SharedArray.create((n_remaining_snip_particles, 3 if not get_extra_data else 5), np.float64, name = "interpolated_snipshot_particle_data")
+            low_z_snipshot_particle_data        = SharedArray.create((n_remaining_snip_particles, 5), np.float64, name = "low_z_snipshot_particle_data")
 
-#        position_delta = low_z_snipshot_particle_data.data[:, :3] - high_z_snipshot_particle_data.data[:, :3]
-#        coords_needing_wrapping = np.abs(position_delta) > half_box_size
-##        Console.print_debug(np.where(coords_needing_wrapping.sum(axis = 1) > 0)[0])
-#        Console.print_debug(interp_fraction)
-#        Console.print_debug(position_delta[67, :])
-#        print()
-#        Console.print_debug(high_z_snipshot_particle_data.data[67, :3])
-#        Console.print_debug(interpolated_snipshot_particle_data.data[67, :3])
-#        Console.print_debug(low_z_snipshot_particle_data.data[67, :3])
-##        return
+            # Determine snipshot data reorder
+            initial_ids = snapshots[snap_num_initial].get_IDs(ParticleType.gas)
+            final_ids = snapshots[snap_num_final].get_IDs(ParticleType.gas)
+            order_by = ArrayReorder.create(initial_ids, final_ids)
 
-        if ENABLE_WRAPPED_INTERPOLATION:
+            # Read snipshot particle data into shared memory
+            high_z_snipshot_all_particle_positions = snapshots[snap_num_initial].get_positions(ParticleType.gas).to("Mpc").value
+            high_z_snipshot_particle_data.data[:, 0] = order_by(high_z_snipshot_all_particle_positions[:, 0])
+            high_z_snipshot_particle_data.data[:, 1] = order_by(high_z_snipshot_all_particle_positions[:, 1])
+            high_z_snipshot_particle_data.data[:, 2] = order_by(high_z_snipshot_all_particle_positions[:, 2])
+            high_z_snipshot_particle_data.data[:, 3] = order_by(snapshots[snap_num_initial].get_masses(ParticleType.gas).to("Msun").value)
+            high_z_snipshot_particle_data.data[:, 4] = order_by(snapshots[snap_num_initial].get_metalicities(ParticleType.gas).value)
+            low_z_snipshot_ids.data[:] = final_ids
+            low_z_snipshot_particle_data.data[:, :3] = snapshots[snap_num_final].get_positions(ParticleType.gas).to("Mpc").value
+            low_z_snipshot_particle_data.data[:, 3]  = snapshots[snap_num_final].get_masses(ParticleType.gas).to("Msun").value
+            low_z_snipshot_particle_data.data[:, 4]  = snapshots[snap_num_final].get_metalicities(ParticleType.gas).value
+
+    #        Console.print_debug(((final_ids - order_by(initial_ids)) != 0).sum())
+    #        Console.print_debug(((low_z_snipshot_particle_data.data[:, 3] - high_z_snipshot_particle_data.data[:, 3]) < 0).sum())
+    #        Console.print_debug(((low_z_snipshot_particle_data.data[:, 4] - high_z_snipshot_particle_data.data[:, 4]) < 0).sum())
+    #        invalid_particles_mask = (low_z_snipshot_particle_data.data[:, 4] - high_z_snipshot_particle_data.data[:, 4]) < 0
+    #        invalid_indexes = np.where(invalid_particles_mask)[0]
+    #        print(flush = True)
+    #        for i in invalid_indexes[:20]:
+    #            Console.print_debug("Index:", i)
+    #            Console.print_debug("ID:", order_by(initial_ids)[i], "->", final_ids[i])
+    #            Console.print_debug("Mass:", high_z_snipshot_particle_data.data[i, 3], "->", low_z_snipshot_particle_data.data[i, 3])
+    #            Console.print_debug("Metallicity:", high_z_snipshot_particle_data.data[i, 4], "->", low_z_snipshot_particle_data.data[i, 4])
+    #            Console.print_debug("Metallicity change:", low_z_snipshot_particle_data.data[i, 4] - high_z_snipshot_particle_data.data[i, 4])
+    #            Console.print_debug("Metallicity change:", 100 * (low_z_snipshot_particle_data.data[i, 4] - high_z_snipshot_particle_data.data[i, 4]) / high_z_snipshot_particle_data.data[i, 4], "%")
+    #            print(flush = True)
+    #        percentage_changes = 100 * np.abs(low_z_snipshot_particle_data.data[invalid_indexes, 4] - high_z_snipshot_particle_data.data[invalid_indexes, 4]) / high_z_snipshot_particle_data.data[invalid_indexes, 4]
+    #        Console.print_debug("Min absolute metallicity change:", percentage_changes.min(), "%")
+    #        Console.print_debug("Max absolute metallicity change:", percentage_changes.max(), "%")
+    #        Console.print_debug("Mean absolute metallicity change:", percentage_changes.mean(), "%")
+    #        Console.print_debug("Median absolute metallicity change:", np.median(percentage_changes), "%")
+    #        return
+
+            # Interpolate snipshot data to match line-of-sight redshift
+            interp_fraction = (sightline_file.a - snap_expansion_factors[snap_num_initial]) / (snap_expansion_factors[snap_num_final] - snap_expansion_factors[snap_num_initial])
+            if not get_extra_data:
+                interpolated_snipshot_particle_data.data[:, :3] = high_z_snipshot_particle_data.data[:, :3] * (1 - interp_fraction) + (low_z_snipshot_particle_data.data[:, :3] * interp_fraction)
+            else:
+                interpolated_snipshot_particle_data.data[:, :] = high_z_snipshot_particle_data.data[:, :] * (1 - interp_fraction) + (low_z_snipshot_particle_data.data[:, :] * interp_fraction)
+
             position_delta = low_z_snipshot_particle_data.data[:, :3] - high_z_snipshot_particle_data.data[:, :3]
             coords_needing_wrapping = np.abs(position_delta) > half_box_size
             for i in range(3):
@@ -302,26 +353,8 @@ async def __main(
 
                 interpolated_snipshot_particle_data.data[this_coord_needs_wrapping, i] = UNWRAPPED_INTERPOLATED_POSITION
 
-#        print()
-#        Console.print_debug(high_z_snipshot_particle_data.data[67, :3])
-#        Console.print_debug(interpolated_snipshot_particle_data.data[67, :3])
-#        Console.print_debug(low_z_snipshot_particle_data.data[67, :3])
-#
-#        return
-
-#        if ENABLE_WRAPPED_INTERPOLATION:#NOT WORKING!!!!!
-#            position_delta = low_z_snipshot_particle_data.data[:, :3] - high_z_snipshot_particle_data.data[:, :3]
-#            coords_needing_wrapping = np.abs(position_delta) > half_box_size
-#            for i in range(3):
-#                interpolated_snipshot_particle_data.data[coords_needing_wrapping[:, i], i] = (half_box_size - position_delta[coords_needing_wrapping[:, i], i]) * interp_fraction + high_z_snipshot_particle_data.data[coords_needing_wrapping[:, i], i]
-#            del position_delta
-#            del coords_needing_wrapping
-#            for i in range(3):
-#                new_coords_needing_wrapping = (interpolated_snipshot_particle_data.data[:, i] > box_size) | (interpolated_snipshot_particle_data.data[:, i] < 0)
-#                interpolated_snipshot_particle_data.data[new_coords_needing_wrapping, i] = interpolated_snipshot_particle_data.data[new_coords_needing_wrapping, i] - (box_size * np.sign(interpolated_snipshot_particle_data.data[new_coords_needing_wrapping, i]))
-
         for los_index in do_sightlines:
-            Console.print_verbose_info(f"LOS{los_index}", end = " ", flush = True)
+            Console.print_info(f"LOS{los_index}", end = " " if not (Settings.verbose or Settings.debug) else "\n", flush = True)
 
             if Settings.verbose:
                 timer_start = time.time()
@@ -338,26 +371,57 @@ async def __main(
             #selected_particle_indexes = SharedArray.create(1, np.int64, name = "selected_particle_indexes")
             selected_particle_ids = SharedArray.create(los_n_particles, np.int64, name = "selected_particle_ids")
 
-            los_region_particle_mask = np.full_like(low_z_snipshot_ids.data, True, dtype = np.bool_)
-            for i in range(3):
-                if i == np.where(los.direction > 0)[0][0]:
-                    continue
-                vmin = los_data.data[:, i].min()
-                vmax = los_data.data[:, i].max()
-                half_vdelta = (vmax - vmin) / 2
-                los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] >= vmin - half_vdelta)
-                los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] <= vmax + half_vdelta)
-            n_masked_particles = los_region_particle_mask.sum()
+            if use_memory_efficient_data_loading:
 
-            masked__low_z_snipshot_ids = SharedArray.create(n_masked_particles, np.int64, name = "masked__low_z_snipshot_ids")
-            masked__high_z_snipshot_particle_data = SharedArray.create((n_masked_particles, high_z_snipshot_particle_data.data.shape[1]), np.float64, name = "masked__high_z_snipshot_particle_data")
-            masked__interpolated_snipshot_particle_data = SharedArray.create((n_masked_particles, interpolated_snipshot_particle_data.data.shape[1]), np.float64, name = "masked__interpolated_snipshot_particle_data")
-            masked__low_z_snipshot_particle_data = SharedArray.create((n_masked_particles, low_z_snipshot_particle_data.data.shape[1]), np.float64, name = "masked__low_z_snipshot_particle_data")
+                los_displacements = calculate_wrapped_displacement(los.start_position.to("Mpc").value, los_data.data[:, :3], box_size)
+                column_width: float = 0.0
+                for i in range(3):
+                    if i == np.where(los.direction > 0)[0][0]:
+                        continue
+#                    vmin_delta = np.abs(los.start_position.to("Mpc").value[i] - los_data.data[:, i].min())
+#                    vmax_delta = np.abs(los.start_position.to("Mpc").value[i] - los_data.data[:, i].max())
+                    vmin_delta = np.abs(los_displacements[:, i].min())
+                    vmax_delta = np.abs(los_displacements[:, i].max())
+                    delta = max(vmin_delta, vmax_delta) * 2
+                    column_width = max(column_width, delta)
 
-            masked__low_z_snipshot_ids.data[:] = low_z_snipshot_ids.data[los_region_particle_mask]
-            masked__high_z_snipshot_particle_data.data[:, :] = high_z_snipshot_particle_data.data[los_region_particle_mask, :]
-            masked__interpolated_snipshot_particle_data.data[:, :] = interpolated_snipshot_particle_data.data[los_region_particle_mask, :]
-            masked__low_z_snipshot_particle_data.data[:, :] = low_z_snipshot_particle_data.data[los_region_particle_mask, :]
+                (
+                    masked__low_z_snipshot_ids,
+                    masked__high_z_snipshot_particle_data,
+                    masked__interpolated_snipshot_particle_data,
+                    masked__low_z_snipshot_particle_data
+                ) = read_data_column_and_interpolate(
+                    snapshots[snap_num_initial],
+                    snapshots[snap_num_final],
+                    sightline_file.a,
+                    np.where(los.direction > 0)[0][0],
+                    tuple(los.start_position.to("Mpc")[np.where(~(los.direction > 0))[0]]),
+                    column_width = unyt_quantity(column_width * column_width_multiplier, "Mpc"),
+                    read_unnessessary_data = get_extra_data
+                )
+
+            else:
+
+                los_region_particle_mask = np.full_like(low_z_snipshot_ids.data, True, dtype = np.bool_)
+                for i in range(3):
+                    if i == np.where(los.direction > 0)[0][0]:
+                        continue
+                    vmin = los_data.data[:, i].min()
+                    vmax = los_data.data[:, i].max()
+                    half_vdelta = (vmax - vmin) / 2
+                    los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] >= vmin - (half_vdelta * (column_width_multiplier - 1)))
+                    los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] <= vmax + (half_vdelta * (column_width_multiplier - 1)))
+                n_masked_particles = los_region_particle_mask.sum()
+
+                masked__low_z_snipshot_ids = SharedArray.create(n_masked_particles, np.int64, name = "masked__low_z_snipshot_ids")
+                masked__high_z_snipshot_particle_data = SharedArray.create((n_masked_particles, high_z_snipshot_particle_data.data.shape[1]), np.float64, name = "masked__high_z_snipshot_particle_data")
+                masked__interpolated_snipshot_particle_data = SharedArray.create((n_masked_particles, interpolated_snipshot_particle_data.data.shape[1]), np.float64, name = "masked__interpolated_snipshot_particle_data")
+                masked__low_z_snipshot_particle_data = SharedArray.create((n_masked_particles, low_z_snipshot_particle_data.data.shape[1]), np.float64, name = "masked__low_z_snipshot_particle_data")
+
+                masked__low_z_snipshot_ids.data[:] = low_z_snipshot_ids.data[los_region_particle_mask]
+                masked__high_z_snipshot_particle_data.data[:, :] = high_z_snipshot_particle_data.data[los_region_particle_mask, :]
+                masked__interpolated_snipshot_particle_data.data[:, :] = interpolated_snipshot_particle_data.data[los_region_particle_mask, :]
+                masked__low_z_snipshot_particle_data.data[:, :] = low_z_snipshot_particle_data.data[los_region_particle_mask, :]
 
             if Settings.verbose:
                 time_after_data_load = time.time()
@@ -403,8 +467,7 @@ async def __main(
                 time_after_recovery = time.time()
 
             if selected_los_particle_index is None:
-                if Settings.verbose:
-                    print("duplicates:", len(los) - np.unique(selected_particle_ids.data).shape[0], end = " ", flush = True)
+                (print if not (Settings.verbose or Settings.debug) else Console.print_info)("duplicates:", len(los) - np.unique(selected_particle_ids.data).shape[0], end = " ", flush = True)
                 with h5.File(output_file, "a") as file:
                     if f"LOS{los_index}" in file[output_file_group_name]:
                         if force_selection:
@@ -412,8 +475,8 @@ async def __main(
                         else:
                             raise KeyError("Attempted to write data to a LoS group that already exists when not using the --force-selection option.\nThis should not be possible - please report this.")
                     file[output_file_group_name].create_dataset(f"LOS{los_index}", data = selected_particle_ids.data)
+                print("(written to file)", end = " ", flush = True)
                 if Settings.verbose:
-                    print("(written to file)", end = " ", flush = True)
                     timer_stop = time.time()
                     print(f"    took {timer_stop - timer_start}s ({time_after_data_load - timer_start} + {time_after_recovery - time_after_data_load} + {timer_stop - time_after_recovery})", flush = True)
                 if plot_selection_stats:
@@ -468,7 +531,7 @@ Target Line of Sight Particle:
 
 Matched particle:
                    ID = {selected_particle_ids.data[selected_los_particle_index]}
-                index = {selected_particle_index}
+                index = {selected_particle_index} (data subset, NOT snapshot)
 
 Matched particle (previous snapshot/snipshot):
                  file = {snapshot_filepaths_by_number[snap_num_initial]}
@@ -501,12 +564,130 @@ Matched particle (subsequent snapshot/snipshot):
             masked__high_z_snipshot_particle_data.free(force = True)
             masked__interpolated_snipshot_particle_data.free(force = True)
             masked__low_z_snipshot_particle_data.free(force = True)
-        low_z_snipshot_ids.free(force = True)
-        high_z_snipshot_particle_data.free(force = True)
-        interpolated_snipshot_particle_data.free(force = True)
-        low_z_snipshot_particle_data.free(force = True)
-        if Settings.verbose:
-            print(flush = True)
+        if not use_memory_efficient_data_loading:
+            low_z_snipshot_ids.free(force = True)
+            high_z_snipshot_particle_data.free(force = True)
+            interpolated_snipshot_particle_data.free(force = True)
+            low_z_snipshot_particle_data.free(force = True)
+        print(flush = True)
+
+
+
+def read_data_column_and_interpolate(
+        initial_snap: SnapshotEAGLE,
+        final_snap: SnapshotEAGLE,
+        line_of_sight_expansion_factor: float,
+        projection_axis_index: int,
+        face_centre: Tuple[unyt_quantity, unyt_quantity],
+        column_width: unyt_quantity = unyt_quantity(2.0, "Mpc"),
+        read_unnessessary_data: bool = False
+) -> Tuple[SharedArray, SharedArray, SharedArray, SharedArray]:
+
+    Console.print_verbose_info(f"Reading particle data with column width of {column_width.value} {column_width.units}.")
+
+    # Compute the region limits
+
+    half_column_width = column_width / 2
+    restriction_region_args: List[unyt_quantity|None] = [None, None, None, None, None, None]
+    face_index = 0
+    for i in range(3):
+        if i == projection_axis_index:
+            continue # Non need to explicitly set values for the axis of projection as this will be automatically set to the length of the box
+        restriction_region_args[i * 2] = face_centre[face_index] - half_column_width
+        restriction_region_args[i * 2 + 1] = face_centre[face_index] + half_column_width
+        face_index += 1
+
+    Console.print_debug(f"LoS centre coords are {face_centre}.")
+    Console.print_debug(f"Column width is {column_width}.")
+    Console.print_verbose_info(f"Column limits are {', '.join([((str(v.value) + ' ' + str(v.units)) if v is not None else '---') for v in restriction_region_args])}.")
+
+    # Restrict the region to read data from
+
+    initial_snap.restrict_data_comoving_loading_region(*restriction_region_args)
+    final_snap.restrict_data_comoving_loading_region(*restriction_region_args)
+
+    # Find the particles that appear in both snapshots
+
+    Console.print_verbose_info("Loading particle ID data.")
+
+    initial_ids = initial_snap.get_IDs(ParticleType.gas)
+    final_ids = final_snap.get_IDs(ParticleType.gas)
+
+    common_ids = np.intersect1d(initial_ids, final_ids, assume_unique = True)
+    n_returned_particles = common_ids.shape[0]
+
+    Console.print_verbose_info(f"Got {n_returned_particles} particles.")
+
+    # Create callable objects for reorganising the read data
+
+    initial_sorter = ArrayReorder.create(initial_ids, common_ids)
+    final_sorter = ArrayReorder.create(final_ids, common_ids)
+
+    # Delete unnessessary ID data
+
+    del initial_ids, final_ids
+
+    # Create shared memory for loaded and interpolated data
+
+    ordered_data_ids = SharedArray.create(n_returned_particles, np.int64, name = "ordered_data_ids")
+    initial_snapshot_data = SharedArray.create((n_returned_particles, 5), np.float64, name = "high_z_snipshot_particle_data")
+    final_snapshot_data = SharedArray.create((n_returned_particles, 5), np.float64, name = "low_z_snipshot_particle_data")
+    interpolated_snapshot_data = SharedArray.create((n_returned_particles, 3 if not read_unnessessary_data else 5), np.float64, name = "interpolated_snipshot_particle_data") # Only need interpolated positions
+
+    # Move the IDs into shared memory
+    ordered_data_ids.data[:] = common_ids[:]
+
+    # Load the position data
+
+    Console.print_verbose_info("Loading particle position data.")
+
+    initial_snapshot_data.data[:, :3] = initial_sorter(initial_snap.get_positions(ParticleType.gas).to("Mpc").value)
+    final_snapshot_data.data[:, :3] = final_sorter(final_snap.get_positions(ParticleType.gas).to("Mpc").value)
+
+    # Interpolate positions to match the line-of-sight redshift (before remaining data is loaded into memory)
+
+    Console.print_verbose_info("Interpolating particle positions.")
+
+    interp_fraction = (line_of_sight_expansion_factor - initial_snap.a) / (final_snap.a - initial_snap.a)
+    interpolated_snapshot_data.data[:, :3] = initial_snapshot_data.data[:, :3] * (1 - interp_fraction) + (final_snapshot_data.data[:, :3] * interp_fraction)
+
+    box_size = final_snap.box_size[0].to("Mpc").value
+    position_delta = final_snapshot_data.data[:, :3] - initial_snapshot_data.data[:, :3]
+    coords_needing_wrapping = np.abs(position_delta) > box_size / 2
+    for i in range(3):
+        this_coord_needs_wrapping = coords_needing_wrapping[:, i]
+        UNWRAPPED_FINAL_POSITION = final_snapshot_data.data[this_coord_needs_wrapping, i] - (np.sign(position_delta[this_coord_needs_wrapping, i]) * box_size)
+        UNWRAPPED_INTERPOLATED_POSITION = initial_snapshot_data.data[this_coord_needs_wrapping, i] + (interp_fraction * (UNWRAPPED_FINAL_POSITION - initial_snapshot_data.data[this_coord_needs_wrapping, i]))
+
+        needs_re_wrapping = (UNWRAPPED_INTERPOLATED_POSITION < 0) | (UNWRAPPED_INTERPOLATED_POSITION > box_size)
+
+        WRAPPING_CORRECTED_SUBSET = UNWRAPPED_INTERPOLATED_POSITION[needs_re_wrapping] - (np.sign(UNWRAPPED_INTERPOLATED_POSITION[needs_re_wrapping]) * box_size)
+        
+        UNWRAPPED_INTERPOLATED_POSITION[needs_re_wrapping] = WRAPPING_CORRECTED_SUBSET
+
+        interpolated_snapshot_data.data[this_coord_needs_wrapping, i] = UNWRAPPED_INTERPOLATED_POSITION
+
+    # Load remaining data
+
+    Console.print_verbose_info("Loading particle mass and metallicity data.")
+
+    initial_snapshot_data.data[:, 3] = initial_sorter(initial_snap.get_masses(ParticleType.gas).to("Msun").value)
+    final_snapshot_data.data[:, 3] = final_sorter(final_snap.get_masses(ParticleType.gas).to("Msun").value)
+
+    initial_snapshot_data.data[:, 4] = initial_sorter(initial_snap.get_metalicities(ParticleType.gas).value)
+    final_snapshot_data.data[:, 4] = final_sorter(final_snap.get_metalicities(ParticleType.gas).value)
+
+    if read_unnessessary_data:
+        Console.print_verbose_info("Interpolating particle mass and metallicity data.")
+        interpolated_snapshot_data.data[:, 3:] = initial_snapshot_data.data[:, 3:] * (1 - interp_fraction) + (final_snapshot_data.data[:, 3:] * interp_fraction)
+
+    # Explicitly clean up the sorting opbjects which will contain large arrays
+
+    del initial_sorter, final_sorter
+
+    # Return the shared memory arrays
+
+    return ordered_data_ids, initial_snapshot_data, interpolated_snapshot_data, final_snapshot_data
 
 
 

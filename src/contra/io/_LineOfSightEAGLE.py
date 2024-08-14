@@ -53,6 +53,8 @@ class LineOfSightFileEAGLE(LineOfSightFileBase):
 
     @staticmethod
     def get_files(directory: str, prefix: str = "part_los") -> Tuple[str, ...]:
+        if not os.path.exists(directory):
+            raise FileNotFoundError(f"Line-of-sight file directory \"{directory}\" does not exist.")
         los_files = [os.path.join(directory, file) for file in list(*os.walk(directory))[2] if file[:len(prefix)] == "part_los"]
         los_files.sort(key = lambda v: float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 1)[0]))
         return tuple(los_files)
