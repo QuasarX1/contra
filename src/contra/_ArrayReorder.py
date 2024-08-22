@@ -8,6 +8,162 @@ import numpy as np
 from unyt import unyt_quantity, unyt_array
 from QuasarCode import Console
 
+
+class ArrayReorder_2(Callable):
+    """
+    Callable object that allows the order of elements in an
+        array to be rearanged to match that of a template array.
+    
+    DO NOT use the constructor! Instead, use the static method "create" and the "reverse" attribute.
+    """
+
+    def __init__(
+                    self,
+                    source_order: np.ndarray,
+                    target_mask: np.ndarray,
+                    expected_input_length: int
+                ) -> None:
+        self.__source_order_indexes = source_order
+        self.__target_mask = target_mask
+        self.__input_length = expected_input_length
+        self.__output_length = len(target_mask)
+        
+        self.__reverse: "ArrayReorder"
+
+    def __set_reverse(self, reverse_object: "ArrayReorder_2") -> None:
+        self.__reverse = reverse_object
+
+    @property
+    def reverse(self) -> "ArrayReorder_2":
+        """
+        Reverse operation object.
+        """
+        return self.__reverse
+
+
+    @singledispatchmethod
+    def __call__(
+                    self,
+                    source_data: np.ndarray,
+                    /,
+                    output_array: Union[np.ndarray, None] = None,
+                    default_value: Union[Any, None] = None
+                ) -> np.ndarray:
+        """
+        Reorder data.
+        """
+
+        if output_array is not None and default_value is not None:
+            Console.print_verbose_warning("ArrayReorder: call got both an output array and default value.\nDangerous behaviour as this may overwrite elements!")
+
+        if output_array is None:
+            output_array = np.empty(shape = (self.__output_length, *source_data.shape[1:]), dtype = source_data.dtype)
+
+        if default_value is not None:
+            output_array[~self.__target_mask] = default_value
+
+        output_array[self.__target_mask] = source_data[self.__source_order_indexes]
+
+        return output_array
+    
+    @__call__.register(unyt_array)
+    def _(self,
+                source_data: unyt_array,
+                /,
+                output_array: Union[unyt_array, None] = None,
+                default_value: Union[unyt_quantity, None] = None
+         ) -> unyt_array:
+        
+        input_units = source_data.units
+        if output_array is None:
+            raw_output_array = None
+        else:
+            raw_output_array = np.full(output_array.shape, np.nan)
+        if default_value is None:
+            raw_default_value = None
+        else:
+            raw_default_value = default_value.to(input_units).value
+        raw_result = self.__call__(source_data.value, raw_output_array, raw_default_value)
+        if output_array is not None:
+            output_array[self.__target_mask] = unyt_array(raw_output_array[self.__target_mask], units = input_units).to(output_array.units)
+            if default_value is not None:
+                output_array[~self.__target_mask] = unyt_array(raw_output_array[~self.__target_mask], units = input_units).to(output_array.units)
+        else:
+            output_array = unyt_array(raw_result, input_units)
+        return output_array
+
+    @staticmethod
+    def create(
+                source_order: np.ndarray,
+                target_order: np.ndarray,
+                source_order_filter: Union[np.ndarray, None] = None,
+                target_order_filter: Union[np.ndarray, None] = None
+              ) -> "ArrayReorder_2":
+        """
+        Create a new ArrayReorder instance.
+
+        source_order_filter and target_order_filter allow only specific elements
+            to be considered for matching without altering the input or output shapes.
+        """
+
+        if source_order_filter is None:
+            source_order_filter = np.full(source_order.shape[0], True, dtype = np.bool_)
+        if target_order_filter is None:
+            target_order_filter = np.full(target_order.shape[0], True, dtype = np.bool_)
+
+        _, input_common_indices, output_common_indices = np.intersect1d(source_order[source_order_filter], target_order[target_order_filter], assume_unique = True, return_indices = True)
+
+        forwards_object  = ArrayReorder_2(np.where(source_order_filter)[0][input_common_indices][output_common_indices.argsort()], target_order_filter, source_order.shape[0])
+        backwards_object = ArrayReorder_2(np.where(target_order_filter)[0][output_common_indices][input_common_indices.argsort()], source_order_filter, target_order.shape[0])
+        forwards_object.__set_reverse(backwards_object)
+        backwards_object.__set_reverse(forwards_object)
+        return forwards_object
+
+        x_out[target_order_filter] = x_in[np.where(source_order_filter)[0][a][b.argsort]]
+        x_in[source_order_filter] = x_out[np.where(target_order_filter)[0][b][a.argsort]]
+
+
+        # Get the order nessessary to sort both arrays
+        # Arrays need to be sorted in order to allow rearangement
+        source_order_sorted = source_order.argsort()
+        target_order_sorted = target_order.argsort()
+
+        # Get the order to undo the sort opperations so that the original orders can be recovered for other datasets
+        source_order_undo_sorted = source_order_sorted.argsort()
+        target_order_undo_sorted = target_order_sorted.argsort()
+
+        # Get the (sorted) lists of valid IDs for matching
+        # This allows the input and output shapes to be retained with some elements not being valid for matching
+        target_searchable = target_order[target_order_sorted] if target_order_filter is None else target_order[target_order_sorted][target_order_filter[target_order_sorted]]
+        source_searchable = source_order[source_order_sorted] if source_order_filter is None else source_order[source_order_sorted][source_order_filter[source_order_sorted]]
+
+        # Identify which elements in each array are a match with the valid elements in that other array
+        forwards_membership_filter = np.isin(source_order[source_order_sorted], target_searchable)[source_order_undo_sorted]
+        backwards_membership_filter = np.isin(target_order[target_order_sorted], source_searchable)[target_order_undo_sorted]
+
+        # Exclude any matches from self if they are for an invalid element
+        if source_order_filter is not None:
+            forwards_membership_filter = forwards_membership_filter & source_order_filter
+        if target_order_filter is not None:
+            backwards_membership_filter = backwards_membership_filter & target_order_filter
+
+        # Re-compute the sorted order for only valid matches
+        # These should have the same length!
+        source_order_sorted = source_order[forwards_membership_filter].argsort()
+        target_order_sorted = target_order[backwards_membership_filter].argsort()
+
+        # Re-compute the reverse of the sorted order for only valid matches
+        source_order_undo_sorted = source_order_sorted.argsort()
+        target_order_undo_sorted = target_order_sorted.argsort()
+
+        forwards_object  = ArrayReorder(forwards_membership_filter, backwards_membership_filter, source_order_sorted[target_order_undo_sorted])
+        backwards_object = ArrayReorder(backwards_membership_filter, forwards_membership_filter, target_order_sorted[source_order_undo_sorted])
+        forwards_object.__set_reverse(backwards_object)
+        backwards_object.__set_reverse(forwards_object)
+        return forwards_object
+
+
+
 class ArrayReorder(Callable):
     """
     Callable object that allows the order of elements in an

@@ -140,10 +140,12 @@ class SharedArray(object):
         if not isinstance(shape[0], int):
             shape = tuple([int(v) for v in shape])
         id = uuid.uuid4()
+        a = SharedMemory(create = True, size = COUNTER_N_BYTES, name = f"{name}_counter_{id}" if name is not None else None)
+        b = SharedMemory(create = True, size = SharedArray.n_bytes_in_array(shape, dtype), name = f"{name}_data_{id}" if name is not None else None)
         obj = SharedArray(
             SharedArray._make_lock(),
-            counter_memory = SharedMemory(create = True, size = COUNTER_N_BYTES, name = f"{name}_counter_{id}" if name is not None else None),
-            data_memory = SharedMemory(create = True, size = SharedArray.n_bytes_in_array(shape, dtype), name = f"{name}_data_{id}" if name is not None else None),
+            counter_memory = a,
+            data_memory = b,
             shape = shape,
             dtype = dtype,
             debugging_name = f"{name} <{id}|{os.getpid()}>" if name is not None else None

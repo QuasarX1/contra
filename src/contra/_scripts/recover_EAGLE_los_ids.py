@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: None
 #BAD_TESTING_SNIPSHOTS = ("snip_354_z000p225.0.hdf5", "snip_288_z000p770.0.hdf5", "snip_224_z001p605.0.hdf5", "snip_159_z002p794.0.hdf5")
-from contra import ParticleType, ArrayReorder, SharedArray, SharedArray_TransmissionData, calculate_wrapped_displacement, calculate_wrapped_distance
+from contra import ParticleType, ArrayReorder, ArrayReorder_2, SharedArray, SharedArray_TransmissionData, calculate_wrapped_displacement, calculate_wrapped_distance, Stopwatch
 from contra.io import SnapshotEAGLE, LineOfSightFileEAGLE
 import h5py as h5
 import numpy as np
-from typing import Any, Union, List, Dict, Tuple, Iterable, Iterator
+from typing import cast, Any, Union, List, Dict, Tuple, Iterable, Iterator
 import os
 from QuasarCode import Console, Settings
 from QuasarCode.Tools import ScriptWrapper, ArrayVisuliser
@@ -127,6 +127,27 @@ def main():
                 short_name = "m",
                 sets_param = "use_memory_efficient_data_loading",
                 description = "Load data using a method that prioritises memory efficiency.\nThis may be required when targeting large simulation volumes to avoid needing to load the entire volume.\nNote: this may be SLOWER if running on systems that are capable of loading the whole volume if there are a large number of lines-of-sight!",
+            ),
+            ScriptWrapper.OptionalParam[str](
+                name = "start-file",
+                sets_param = "parallel_start_file",
+                description = "Start from a specific file.\nSpecify the full name of the file (including extension) but not the path.\nThe number of files to do must also be specified!",
+                requirements = ["number-of-files"],
+                conflicts = ["do-file", "start-file-index"]
+            ),
+            ScriptWrapper.OptionalParam[int](
+                name = "start-file-index",
+                sets_param = "parallel_start_file_index",
+                description = "Start from a specific file.\nSpecify the index of the file in assending redshift order.\nThe number of files to do must also be specified!",
+                conversion_function = int,
+                requirements = ["number-of-files"],
+                conflicts = ["do-file", "start-file"]
+            ),
+            ScriptWrapper.OptionalParam[int](
+                name = "number-of-files",
+                sets_param = "number_of_files_to_do",
+                description = "Number of files to be run when a start file is specified. This can be greater than the number of remaining files.",
+                conversion_function = int
             )
         )
     ).run(__main)
@@ -140,13 +161,19 @@ def __main(
             n_processes: int,
             fractional_los_quantity_error: float,
             column_width_multiplier: float,
-            selected_file: str | None,
-            selected_los_index: int | None,
-            selected_los_particle_index: int | None,
+            selected_file: str|None,
+            selected_los_index: int|None,
+            selected_los_particle_index: int|None,
             force_selection: bool,
             plot_selection_stats: bool,
-            use_memory_efficient_data_loading: bool
+            use_memory_efficient_data_loading: bool,
+            parallel_start_file: str|None,
+            parallel_start_file_index: int|None,
+            number_of_files_to_do: int|None
           ) -> None:
+
+    STOPWATCH = Stopwatch("Command", print_on_start = False, show_time_since_lap = False)
+    CHUNK_STOPWATCH = Stopwatch("Section", print_on_start = False, show_time_since_lap = True, synchronise = STOPWATCH)
     
     if not os.path.exists(los_directory):
         Console.print_error(f"Line-of-sight file directory \"{los_directory}\" does not exist.")
@@ -164,9 +191,30 @@ def __main(
     if selected_file is not None:
         selected_file = os.path.join(los_directory, selected_file)
         if selected_file not in los_files:
-            Console.print_error("A specific Line of Sight file was specified ({selected_file}) but does not exist at location \"{los_directory}\".")
+            Console.print_error(f"A specific Line of Sight file was specified ({selected_file}) but does not exist at location \"{los_directory}\".")
             Console.print_info("Terminating...")
             return
+    elif parallel_start_file is not None or parallel_start_file_index is not None:
+        if parallel_start_file is not None:
+            parallel_start_file = cast(str, parallel_start_file)
+            parallel_start_file = os.path.join(los_directory, parallel_start_file)
+            if parallel_start_file not in los_files:
+                Console.print_error(f"A specific Line of Sight file was specified ({parallel_start_file}) but does not exist at location \"{los_directory}\".")
+                Console.print_info("Terminating...")
+                return
+        else:
+            parallel_start_file_index = cast(int, parallel_start_file_index)
+            if (parallel_start_file_index >= 0 and len(los_files) <= parallel_start_file_index) or (parallel_start_file_index < 0 and len(los_files) < -parallel_start_file_index):
+                Console.print_error(f"Too few line-of-sight files ({len(los_files)}) at location \"{los_directory}\" for start file index {parallel_start_file_index}.")
+                Console.print_info("Terminating...")
+                return
+            parallel_start_file = los_files[parallel_start_file_index]
+        if cast(int, number_of_files_to_do) < 1:
+            Console.print_error(f"Number of line-of-sight files requested for recovery ({number_of_files_to_do}) is less than 1. Must be at least 1.")
+            Console.print_info("Terminating...")
+            return
+        start_file_index = los_files.index(parallel_start_file)
+        los_files = los_files[start_file_index : (start_file_index + cast(int, number_of_files_to_do))]
 
     # Get the snipshot filepaths in redshift order (assending z)
 
@@ -226,7 +274,7 @@ def __main(
         if output_file_group_name in complete_files:
             with h5.File(output_file, "r") as file:
                 completed_sightlines = len(list(file[output_file_group_name]))
-            if completed_sightlines == len(sightline_file):
+            if completed_sightlines == len(sightline_file) and not force_selection:
                 continue
         else:
             with h5.File(output_file, "a") as file:
@@ -235,6 +283,10 @@ def __main(
         # State which file is being targeted
 
         Console.print_info(output_file_group_name)
+
+        if Settings.verbose or Settings.debug:
+            STOPWATCH.start()
+            CHUNK_STOPWATCH.start(print = False)
 
         # Identify which lines of sight need to be computed for this file
 
@@ -263,6 +315,9 @@ def __main(
 
         snap_num_initial, snap_num_final = find_neighbouring_snapshots(sightline_file.z)
 
+        if Settings.verbose or Settings.debug:
+            CHUNK_STOPWATCH.lap("Preliminary state set.")
+
         # Create EAGLE snapshot reader objects
         # These are cached to avoid unnessessary initilisation if the same snipshot is used multiple times
 
@@ -275,6 +330,9 @@ def __main(
         box_size = snapshots[snap_num_final].box_size[0].value
         half_box_size = box_size / 2
 
+        if Settings.verbose or Settings.debug:
+            CHUNK_STOPWATCH.lap("Snapshot objects created.")
+
         # Are the extra interpolated fields needed?
 
         get_extra_data = plot_selection_stats or selected_los_particle_index is not None
@@ -286,6 +344,9 @@ def __main(
             # The number of gas particles will decrease over time,
             # so find the numberof particles that will appear in both snipshots
 
+#            if Settings.verbose or Settings.debug:
+#                timer_start = time.time()
+
             n_remaining_snip_particles = snapshots[snap_num_final].number_of_particles(ParticleType.gas)
 
             low_z_snipshot_ids                  = SharedArray.create(n_remaining_snip_particles,      np.int64  , name = "low_z_snipshot_ids")
@@ -294,21 +355,37 @@ def __main(
             low_z_snipshot_particle_data        = SharedArray.create((n_remaining_snip_particles, 5), np.float64, name = "low_z_snipshot_particle_data")
 
             # Determine snipshot data reorder
+            STOPWATCH.print_verbose_info("Reading initial IDs.")
             initial_ids = snapshots[snap_num_initial].get_IDs(ParticleType.gas)
+            STOPWATCH.print_verbose_info("Reading final IDs.")
             final_ids = snapshots[snap_num_final].get_IDs(ParticleType.gas)
-            order_by = ArrayReorder.create(initial_ids, final_ids)
+            STOPWATCH.print_verbose_info("Computing reorder.")
+            order_by = ArrayReorder_2.create(initial_ids, final_ids)
 
             # Read snipshot particle data into shared memory
+            STOPWATCH.print_verbose_info("Reading initial positions.")
             high_z_snipshot_all_particle_positions = snapshots[snap_num_initial].get_positions(ParticleType.gas).to("Mpc").value
             high_z_snipshot_particle_data.data[:, 0] = order_by(high_z_snipshot_all_particle_positions[:, 0])
             high_z_snipshot_particle_data.data[:, 1] = order_by(high_z_snipshot_all_particle_positions[:, 1])
             high_z_snipshot_particle_data.data[:, 2] = order_by(high_z_snipshot_all_particle_positions[:, 2])
+            STOPWATCH.print_verbose_info(f"Reading initial masses.")
             high_z_snipshot_particle_data.data[:, 3] = order_by(snapshots[snap_num_initial].get_masses(ParticleType.gas).to("Msun").value)
+            STOPWATCH.print_verbose_info("Reading initial metallicities.")
             high_z_snipshot_particle_data.data[:, 4] = order_by(snapshots[snap_num_initial].get_metalicities(ParticleType.gas).value)
             low_z_snipshot_ids.data[:] = final_ids
+            STOPWATCH.print_verbose_info("Reading final positions.")
             low_z_snipshot_particle_data.data[:, :3] = snapshots[snap_num_final].get_positions(ParticleType.gas).to("Mpc").value
+            STOPWATCH.print_verbose_info("Reading final masses.")
             low_z_snipshot_particle_data.data[:, 3]  = snapshots[snap_num_final].get_masses(ParticleType.gas).to("Msun").value
+            STOPWATCH.print_verbose_info("Reading final metallicities.")
             low_z_snipshot_particle_data.data[:, 4]  = snapshots[snap_num_final].get_metalicities(ParticleType.gas).value
+
+#            if Settings.verbose or Settings.debug:
+#                timer_data_read = time.time()
+#                Console.print_info(f"({time.time()}) Reading data took {timer_data_read - timer_start}s.")
+
+            if Settings.verbose or Settings.debug:
+                CHUNK_STOPWATCH.lap("Volume data loaded.")
 
     #        Console.print_debug(((final_ids - order_by(initial_ids)) != 0).sum())
     #        Console.print_debug(((low_z_snipshot_particle_data.data[:, 3] - high_z_snipshot_particle_data.data[:, 3]) < 0).sum())
@@ -338,6 +415,11 @@ def __main(
             else:
                 interpolated_snipshot_particle_data.data[:, :] = high_z_snipshot_particle_data.data[:, :] * (1 - interp_fraction) + (low_z_snipshot_particle_data.data[:, :] * interp_fraction)
 
+#            Console.print_verbose_info(f"({time.time()}) Done interpolating data. Re-computing positions that need wrapping.")
+
+            if Settings.verbose or Settings.debug:
+                STOPWATCH.print("Unwrapped interpolation completed.")
+
             position_delta = low_z_snipshot_particle_data.data[:, :3] - high_z_snipshot_particle_data.data[:, :3]
             coords_needing_wrapping = np.abs(position_delta) > half_box_size
             for i in range(3):
@@ -353,11 +435,21 @@ def __main(
 
                 interpolated_snipshot_particle_data.data[this_coord_needs_wrapping, i] = UNWRAPPED_INTERPOLATED_POSITION
 
-        for los_index in do_sightlines:
-            Console.print_info(f"LOS{los_index}", end = " " if not (Settings.verbose or Settings.debug) else "\n", flush = True)
+#            if Settings.verbose or Settings.debug:
+#                timer_stop = time.time()
+#                Console.print_info(f"({time.time()}) Interpolating data took {timer_stop - timer_data_read}s.")
 
-            if Settings.verbose:
-                timer_start = time.time()
+            if Settings.verbose or Settings.debug:
+                CHUNK_STOPWATCH.lap("Volume data interpolated.")
+
+        for los_index in do_sightlines:
+            Console.print_info(f"LOS{los_index}", end = " " if not (Settings.verbose or Settings.debug) else "\n")
+
+            if Settings.verbose or Settings.debug:
+#                timer_start = time.time()
+                LOS_STOPWATCH = Stopwatch("Line-of-sight", print_on_start = False)
+
+            LOS_STOPWATCH.print_verbose_info("Loading line-of-sight data.")
 
             los = sightline_file.get_sightline(los_index, cache_data = False)
             los_n_particles = len(los)
@@ -367,13 +459,19 @@ def __main(
             los_data.data[:, 3] = los.masses.to("Msun").value
             los_data.data[:, 4] = los.metallicities.value
 
+            LOS_STOPWATCH.print_verbose_info("Creating shared memory for result data.")
+
             selected_particle_indexes = SharedArray.create(los_n_particles, np.int64, name = "selected_particle_indexes")
             #selected_particle_indexes = SharedArray.create(1, np.int64, name = "selected_particle_indexes")
             selected_particle_ids = SharedArray.create(los_n_particles, np.int64, name = "selected_particle_ids")
 
+            # Get the displacements from the line-of-sight (delta in los axis must be ignored)
+            los_displacements = calculate_wrapped_displacement(los.start_position.to("Mpc").value, los_data.data[:, :3], box_size)
+
             if use_memory_efficient_data_loading:
 
-                los_displacements = calculate_wrapped_displacement(los.start_position.to("Mpc").value, los_data.data[:, :3], box_size)
+                LOS_STOPWATCH.print_verbose_info("Loading data from volume chunks.")
+
                 column_width: float = 0.0
                 for i in range(3):
                     if i == np.where(los.direction > 0)[0][0]:
@@ -395,22 +493,61 @@ def __main(
                     snapshots[snap_num_final],
                     sightline_file.a,
                     np.where(los.direction > 0)[0][0],
-                    tuple(los.start_position.to("Mpc")[np.where(~(los.direction > 0))[0]]),
+                    cast(Tuple[int, int], tuple(los.start_position.to("Mpc")[np.where(~(los.direction > 0))[0]])),
                     column_width = unyt_quantity(column_width * column_width_multiplier, "Mpc"),
                     read_unnessessary_data = get_extra_data
                 )
 
             else:
 
+                LOS_STOPWATCH.print_verbose_info("Restricting data size.")
+
                 los_region_particle_mask = np.full_like(low_z_snipshot_ids.data, True, dtype = np.bool_)
                 for i in range(3):
                     if i == np.where(los.direction > 0)[0][0]:
                         continue
-                    vmin = los_data.data[:, i].min()
-                    vmax = los_data.data[:, i].max()
-                    half_vdelta = (vmax - vmin) / 2
-                    los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] >= vmin - (half_vdelta * (column_width_multiplier - 1)))
-                    los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] <= vmax + (half_vdelta * (column_width_multiplier - 1)))
+
+                    LOS_STOPWATCH.print_debug(f"Restricting in axis {i}")
+
+                    los_coordinate = los.start_position.to("Mpc").value[i]
+
+                    vmin_delta = np.abs(los_displacements[:, i].min())
+                    vmax_delta = np.abs(los_displacements[:, i].max())
+                    half_column_width = max(vmin_delta, vmax_delta) * column_width_multiplier
+
+                    wrapping_required = los_coordinate - half_column_width < 0 or los_coordinate + half_column_width > box_size
+                    if not wrapping_required:
+                        los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] >= los_coordinate - half_column_width)
+                        los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] <= los_coordinate + half_column_width)
+
+                    else:
+                        # Selection region overlaps the box boundary
+                        # Apply wrapping to coordinates before masking
+
+                        LOS_STOPWATCH.print_verbose_info(f"Shifting and wrapping particle positions as line-of-sight too close to edge (axis index {i}).")
+
+                        # Shift coords
+                        shift_displacement = half_box_size - los_coordinate
+                        interpolated_snipshot_particle_data.data[:, i] += shift_displacement
+
+                        # Record which are wrapped
+                        wrapped_particles_mask = (interpolated_snipshot_particle_data.data[:, i] < 0) | (interpolated_snipshot_particle_data.data[:, i] > box_size)
+
+                        # Wrap coords
+                        np.mod(interpolated_snipshot_particle_data.data[:, i], box_size, out = interpolated_snipshot_particle_data.data[:, i], where = wrapped_particles_mask)
+
+                        # Compute maxk changes
+                        los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] >= half_box_size - half_column_width)
+                        los_region_particle_mask &= (interpolated_snipshot_particle_data.data[:, i] <= half_box_size + half_column_width)
+
+                        # Reverse the coordinate changes made above
+
+                        # Undo shift
+                        interpolated_snipshot_particle_data.data[:, i] -= shift_displacement
+                        
+                        # Wrap coords
+                        np.mod(interpolated_snipshot_particle_data.data[:, i], box_size, out = interpolated_snipshot_particle_data.data[:, i], where = wrapped_particles_mask)
+
                 n_masked_particles = los_region_particle_mask.sum()
 
                 masked__low_z_snipshot_ids = SharedArray.create(n_masked_particles, np.int64, name = "masked__low_z_snipshot_ids")
@@ -423,8 +560,9 @@ def __main(
                 masked__interpolated_snipshot_particle_data.data[:, :] = interpolated_snipshot_particle_data.data[los_region_particle_mask, :]
                 masked__low_z_snipshot_particle_data.data[:, :] = low_z_snipshot_particle_data.data[los_region_particle_mask, :]
 
-            if Settings.verbose:
-                time_after_data_load = time.time()
+            if Settings.verbose or Settings.debug:
+                LOS_STOPWATCH.lap("Line-of-sight data loaded.")
+#                time_after_data_load = time.time()
 
             if n_processes > 1 and selected_los_particle_index is None:
                 with multiprocessing.Pool(processes = n_processes) as pool:
@@ -463,11 +601,12 @@ def __main(
                         masked__low_z_snipshot_particle_data.data
                     )
 
-            if Settings.verbose:
-                time_after_recovery = time.time()
+            if Settings.verbose or Settings.debug:
+                LOS_STOPWATCH.lap("Particle IDs matched.")
+#                time_after_recovery = time.time()
 
             if selected_los_particle_index is None:
-                (print if not (Settings.verbose or Settings.debug) else Console.print_info)("duplicates:", len(los) - np.unique(selected_particle_ids.data).shape[0], end = " ", flush = True)
+                (print if not (Settings.verbose or Settings.debug) else Console.print_info)("duplicates:", len(los) - np.unique(selected_particle_ids.data).shape[0], end = (" " if not (Settings.verbose or Settings.debug) else "\n"), flush = True)
                 with h5.File(output_file, "a") as file:
                     if f"LOS{los_index}" in file[output_file_group_name]:
                         if force_selection:
@@ -475,10 +614,12 @@ def __main(
                         else:
                             raise KeyError("Attempted to write data to a LoS group that already exists when not using the --force-selection option.\nThis should not be possible - please report this.")
                     file[output_file_group_name].create_dataset(f"LOS{los_index}", data = selected_particle_ids.data)
-                print("(written to file)", end = " ", flush = True)
-                if Settings.verbose:
-                    timer_stop = time.time()
-                    print(f"    took {timer_stop - timer_start}s ({time_after_data_load - timer_start} + {time_after_recovery - time_after_data_load} + {timer_stop - time_after_recovery})", flush = True)
+                #print("(written to file)", end = " ", flush = True)
+                if Settings.verbose or Settings.debug:
+                    LOS_STOPWATCH.stop("Line-of-sight data saved.")
+                    LOS_STOPWATCH.print_info(f"Line-of-sight complete ({' + '.join(LOS_STOPWATCH.get_lap_delta_times(string = True))})")
+#                    timer_stop = time.time()
+#                    print(f"    took {timer_stop - timer_start}s ({time_after_data_load - timer_start} + {time_after_recovery - time_after_data_load} + {timer_stop - time_after_recovery})", flush = True)
                 if plot_selection_stats:
                     Console.print_verbose_info("Plotting statistics.")
 #                    delta_distances = np.sqrt(((los_data.data[:, :3] - masked__interpolated_snipshot_particle_data.data[selected_particle_indexes.data, :3])**2).sum(axis = 1))
@@ -510,9 +651,11 @@ def __main(
                     axes[2].set_xlabel("$Z_{\\rm los}$ - $Z$")
                     plt.savefig(os.path.join(os.path.split(output_file)[0], "stats.png"))
             else:
-                if Settings.verbose:
-                    timer_stop = time.time()
-                    print(f"    took {timer_stop - timer_start}s ({time_after_data_load - timer_start} + {time_after_recovery - time_after_data_load} + {timer_stop - time_after_recovery})", flush = True)
+                if Settings.verbose or Settings.debug:
+                    LOS_STOPWATCH.stop()
+                    LOS_STOPWATCH.print_info(f"Line-of-sight complete ({' + '.join(LOS_STOPWATCH.get_lap_delta_times(string = True))})")
+#                    timer_stop = time.time()
+#                    print(f"    took {timer_stop - timer_start}s ({time_after_data_load - timer_start} + {time_after_recovery - time_after_data_load} + {timer_stop - time_after_recovery})", flush = True)
                 selected_particle_index = selected_particle_indexes.data[selected_los_particle_index]#np.where(low_z_snipshot_ids.data == selected_particle_ids.data[selected_los_particle_index])[0][0]
                 delta_position = masked__interpolated_snipshot_particle_data.data[selected_particle_index, :3] - los_data.data[selected_los_particle_index, :3]
                 delta_distance = np.sqrt((delta_position**2).sum())
@@ -620,8 +763,8 @@ def read_data_column_and_interpolate(
 
     # Create callable objects for reorganising the read data
 
-    initial_sorter = ArrayReorder.create(initial_ids, common_ids)
-    final_sorter = ArrayReorder.create(final_ids, common_ids)
+    initial_sorter = ArrayReorder_2.create(initial_ids, common_ids)
+    final_sorter = ArrayReorder_2.create(final_ids, common_ids)
 
     # Delete unnessessary ID data
 
@@ -809,193 +952,3 @@ def find_match_parallel_wrapper(
     loaded__high_z_particle_data.free()
     loaded__interpolated_particle_data.free()
     loaded__low_z_particle_data.free()
-
-
-
-'''
-async def old__main(
-            output_file: str,
-            data_directory: str,
-            los_directory: str,
-            n_processes: int
-          ) -> None:
-
-    los_files = [os.path.join(los_directory, file) for file in list(*os.walk(los_directory))[2]]
-    los_files.sort(key = lambda v: float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 1)[0]))
-
-    snipshot_files = [os.path.join(folder, files[0].rsplit(".", maxsplit = 2)[0] + ".0.hdf5") for (folder, _, files) in os.walk(data_directory) if folder.rsplit(os.path.sep, maxsplit = 1)[1][:8] == "snipshot"]
-    snipshot_redshifts = [float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 2)[0].replace("p", ".")) for v in snipshot_files]
-    snipshot_files.sort(key = lambda v: float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 2)[0].replace("p", ".")))
-    snipshot_redshifts.sort()
-    snapshot_redshifts: Dict[int, float] = { int(file.rsplit(os.path.sep, maxsplit = 1)[1].split("_")[1]) : snipshot_redshifts[i] for i, file in enumerate(snipshot_files) if file.rsplit(os.path.sep, maxsplit = 1)[1] not in BAD_TESTING_SNIPSHOTS }
-    snapshots: Dict[int, SnapshotEAGLE] = {}#{ int(file.rsplit(os.path.sep, maxsplit = 1)[1].split("_")[1]) : SnapshotEAGLE(file) for file in snipshot_files if file.rsplit(os.path.sep, maxsplit = 1)[1] not in BAD_TESTING_SNIPSHOTS }
-    snapshot_filepaths_by_number: Dict[int, str] = { int(file.rsplit(os.path.sep, maxsplit = 1)[1].split("_")[1]) : file for file in snipshot_files if file.rsplit(os.path.sep, maxsplit = 1)[1] not in BAD_TESTING_SNIPSHOTS }
-
-#    snap_nums = list(snapshots.keys())
-    snap_nums = list(snapshot_redshifts.keys())
-    snap_nums.sort()
-
-#    snap_redshifts = { n : snapshots[n].z for n in snap_nums}
-#    snap_expansion_factors = { n : snapshots[n].a for n in snap_nums }
-    snap_expansion_factors: Dict[int, float] = {}
-
-#    def find_neighbouring_snapshots(z: float) -> Tuple[int, int]:
-#        if z > snapshots[snap_nums[0]].z or z < snapshots[snap_nums[-1]].z:
-#            raise ValueError(f"Redshift {z} outside of redshift range of avalible data.")
-#        lower_redshift_snap_num = snap_nums[0]
-#        while snapshots[lower_redshift_snap_num].z > z:
-#            lower_redshift_snap_num += 1
-#        return (lower_redshift_snap_num - 1, lower_redshift_snap_num)]
-
-    def find_neighbouring_snapshots(z: float) -> Tuple[int, int]:
-        if z > snapshot_redshifts[snap_nums[0]] or z < snapshot_redshifts[snap_nums[-1]]:
-            raise ValueError(f"Redshift {z} outside of redshift range of avalible data.")
-        lower_redshift_snap_num = snap_nums[0]
-        while lower_redshift_snap_num not in snapshot_redshifts or snapshot_redshifts[lower_redshift_snap_num] > z:
-            lower_redshift_snap_num += 1
-        return (lower_redshift_snap_num - 1, lower_redshift_snap_num)
-
-    element_weightings = np.array([
-        1.0, # X-position
-        1.0, # Y-position
-        1.0, # Z-position
-        1.0, # Mass
-        1.0, # Metalicity
-        1.0, # Temperature
-        1.0, # Density
-    ])
-
-    # Create output file
-    if not os.path.exists(output_file):
-        h5.File(output_file, "w").close()
-        complete_files = []
-    else:
-        with h5.File(output_file, "r") as file:
-            complete_files = list(file)
-
-    for f in los_files:
-        sightline_file = LineOfSightFileEAGLE(f)
-
-        output_file_group_name = f.rsplit(os.path.sep, maxsplit = 1)[-1]
-
-        completed_sightlines = 0
-        if output_file_group_name in complete_files:
-            with h5.File(output_file, "r") as file:
-                completed_sightlines = len(list(file[output_file_group_name]))
-            if completed_sightlines == len(sightline_file):
-                continue
-        else:
-            with h5.File(output_file, "a") as file:
-                file.create_group(output_file_group_name)
-
-        Console.print_info(output_file_group_name)
-
-        snap_num_initial, snap_num_final = find_neighbouring_snapshots(sightline_file.z)
-
-        if snap_num_initial not in snapshots:
-            snapshots[snap_num_initial] = SnapshotEAGLE(snapshot_filepaths_by_number[snap_num_initial])
-            snap_expansion_factors[snap_num_initial] = snapshots[snap_num_initial].a
-        if snap_num_final not in snapshots:
-            snapshots[snap_num_final] = SnapshotEAGLE(snapshot_filepaths_by_number[snap_num_final])
-            snap_expansion_factors[snap_num_final] = snapshots[snap_num_final].a
-        selected_snap_nums = [snap_num_initial, snap_num_final]
-
-        # Snipshot data
-        raw_ids = { n : snapshots[n].get_IDs(ParticleType.gas) for n in selected_snap_nums}
-        matching_order = { selected_snap_nums[i] : ArrayReorder.create(raw_ids[selected_snap_nums[i]], raw_ids[selected_snap_nums[i + 1]]) for i in range(len(selected_snap_nums) - 1) }
-
-        raw_positions    = { n : snapshots[n].get_positions(ParticleType.gas).to("Mpc").value       for n in selected_snap_nums }
-        raw_positions_x  = { n : raw_positions[n][:, 0]                                             for n in selected_snap_nums }
-        raw_positions_y  = { n : raw_positions[n][:, 1]                                             for n in selected_snap_nums }
-        raw_positions_z  = { n : raw_positions[n][:, 2]                                             for n in selected_snap_nums }
-        raw_masses       = { n : snapshots[n].get_masses(ParticleType.gas).to("Msun").value         for n in selected_snap_nums }
-        raw_metalicities = { n : snapshots[n].get_metalicities(ParticleType.gas).value              for n in selected_snap_nums }
-        raw_temperatures = { n : snapshots[n].get_temperatures(ParticleType.gas).to("K").value      for n in selected_snap_nums }
-        raw_densities    = { n : snapshots[n].get_densities(ParticleType.gas).to("g/(cm**3)").value for n in selected_snap_nums }
-
-        matched_positions_x  = { n : matching_order[n](raw_positions_x [n]) for n in selected_snap_nums[:-1] }
-        matched_positions_y  = { n : matching_order[n](raw_positions_y [n]) for n in selected_snap_nums[:-1] }
-        matched_positions_z  = { n : matching_order[n](raw_positions_z [n]) for n in selected_snap_nums[:-1] }
-        matched_masses       = { n : matching_order[n](raw_masses      [n]) for n in selected_snap_nums[:-1] }
-        matched_metalicities = { n : matching_order[n](raw_metalicities[n]) for n in selected_snap_nums[:-1] }
-        matched_temperatures = { n : matching_order[n](raw_temperatures[n]) for n in selected_snap_nums[:-1] }
-        matched_densities    = { n : matching_order[n](raw_densities   [n]) for n in selected_snap_nums[:-1] }
-        # End Snipshot data
-
-        interp_fraction = (sightline_file.a - snap_expansion_factors[snap_num_initial]) / (snap_expansion_factors[snap_num_final] - snap_expansion_factors[snap_num_initial])
-        #TODO: apply box wrapping?
-        interpolated_positions_x  = matched_positions_x [snap_num_initial] * (1 - interp_fraction) + (raw_positions_x [snap_num_final] * interp_fraction)
-        interpolated_positions_y  = matched_positions_y [snap_num_initial] * (1 - interp_fraction) + (raw_positions_y [snap_num_final] * interp_fraction)
-        interpolated_positions_z  = matched_positions_z [snap_num_initial] * (1 - interp_fraction) + (raw_positions_z [snap_num_final] * interp_fraction)
-        interpolated_masses       = matched_masses      [snap_num_initial] * (1 - interp_fraction) + (raw_masses      [snap_num_final] * interp_fraction)
-        interpolated_metalicities = matched_metalicities[snap_num_initial] * (1 - interp_fraction) + (raw_metalicities[snap_num_final] * interp_fraction)
-        interpolated_temperatures = matched_temperatures[snap_num_initial] * (1 - interp_fraction) + (raw_temperatures[snap_num_final] * interp_fraction)
-        interpolated_densities    = matched_densities   [snap_num_initial] * (1 - interp_fraction) + (raw_densities   [snap_num_final] * interp_fraction)
-
-        interpolated_vectors = np.array([interpolated_positions_x,
-                                        interpolated_positions_y,
-                                        interpolated_positions_z,
-                                        interpolated_masses,
-                                        interpolated_metalicities,
-                                        interpolated_temperatures,
-                                        interpolated_densities]).T
-
-        # Create array types for sharing the interpolated snapshot vector data and IDs
-        n_snap_particles = len(raw_ids[snap_num_final])
-        snap_data_double_array_type = multiprocessing.Array(ctypes.c_double, n_snap_particles * 7)
-        snap_data_long_array_type = multiprocessing.Array(ctypes.c_long, n_snap_particles)#TODO: check what data type is used for IDs!
-
-#        los_data_double_array_type = multiprocessing.Array(ctypes.c_double, * 7)
-#        los_data_long_array_type = multiprocessing.Array(ctypes.c_long, )#TODO: check what data type is used for IDs!
-
-        shared_interpolated_vectors = np.ctypeslib.as_array(snap_data_double_array_type.get_obj())
-        shared_interpolated_vectors = shared_interpolated_vectors.reshape(n_snap_particles, 7)
-        shared_interpolated_vectors[:, :] = interpolated_vectors[:, :]
-
-        shared_snapshot_ids = np.ctypeslib.as_array(snap_data_long_array_type.get_obj())
-        shared_snapshot_ids = shared_snapshot_ids.reshape(n_snap_particles, 7)
-
-        for los_index in range(completed_sightlines, len(sightline_file)):
-            print(f"LOS{los_index}", end = " ", flush = True)
-
-            los = sightline_file.get_sightline(los_index)
-                
-            los_quantity_vectors = np.array([los.positions_comoving.to("Mpc")[:, 0].value,
-                                            los.positions_comoving.to("Mpc")[:, 1].value,
-                                            los.positions_comoving.to("Mpc")[:, 2].value,
-                                            los.masses.to("Msun").value,
-                                            los.metallicities.value,
-                                            los.temperatures.to("K").value,
-                                            los.densities_comoving.to("g/(cm**3)").value]).T
-
-            if n_processes > 1:
-                pool = multiprocessing.Pool(processes = n_processes)
-                pool.starmap(
-                    find_match,
-                    zip(
-                        range(completed_sightlines, len(sightline_file)),
-                        x,
-                        y,
-                        los_quantity_vectors,
-                        ,
-                        ,
-                        ,
-                        ,
-                        ,
-                        interpolated_vectors,
-                        raw_ids[snap_num_final]
-                    )
-                )
-
-            # Find matches
-            selected_ids = np.full(len(los), -1, dtype = int)
-            for los_part_index in range(len(los)):
-                vector_offsets = (np.abs(interpolated_vectors - los_quantity_vectors[los_part_index]) * element_weightings).sum(axis = 1)
-                matched_index = vector_offsets.argmin()
-                selected_ids[los_part_index] = raw_ids[snap_num_final][matched_index]
-            print("duplicates:", len(los) - np.unique(selected_ids).shape[0], "unset:", (selected_ids == -1).sum(), end = " ", flush = True)
-            with h5.File(output_file, "a") as file:
-                file[output_file_group_name].create_dataset(f"LOS{los_index}", data = selected_ids)
-            print("(written to file)", flush = True)
-        print(flush = True)
-'''
