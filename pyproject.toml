@@ -50,6 +50,7 @@ contra-plot-igm-occupancy = "contra._scripts.plot_cumulitive_particles:main"
 contra-plot-igm-occupancy-hist = "contra._scripts.plot_particle_histograms:main"
 contra-plot-environment = "contra._scripts.plot_temp_density:main"
 contra-generate-eagle-los-ids = "contra._scripts.recover_EAGLE_los_ids:main"
+contra-plot-eagle-recovered-los = "contra._scripts.plot_recovered_line_of_sight:main"
 
 [tool.hatch.version]
 path = "src/contra/__about__.py"

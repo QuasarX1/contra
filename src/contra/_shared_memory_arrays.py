@@ -84,13 +84,13 @@ class SharedArray(object):
             self.__counter_array[0] = self.__counter_array[0] + 1
         self.__freed = False
 
-    def __reset_counter(self):
-        """
-        Reset the counter to 1.
-        Only to be called when creating a new array as the counter will be garbage otherwise!
-        """
-        with self.__info.lock:
-            self.__counter_array[0] = 1
+    #def __reset_counter(self):
+    #    """
+    #    Reset the counter to 1.
+    #    Only to be called when creating a new array as the counter will be garbage otherwise!
+    #    """
+    #    with self.__info.lock:
+    #        self.__counter_array[0] = 1
 
     def free(self, /, force = False):
         """
@@ -142,6 +142,8 @@ class SharedArray(object):
         id = uuid.uuid4()
         a = SharedMemory(create = True, size = COUNTER_N_BYTES, name = f"{name}_counter_{id}" if name is not None else None)
         b = SharedMemory(create = True, size = SharedArray.n_bytes_in_array(shape, dtype), name = f"{name}_data_{id}" if name is not None else None)
+        temp_counter_array: np.ndarray = np.ndarray(shape = COUNTER_SHAPE, dtype = COUNTER_DATATYPE, buffer = a.buf)
+        temp_counter_array[0] = 0
         obj = SharedArray(
             SharedArray._make_lock(),
             counter_memory = a,
@@ -150,7 +152,7 @@ class SharedArray(object):
             dtype = dtype,
             debugging_name = f"{name} <{id}|{os.getpid()}>" if name is not None else None
         )
-        obj.__reset_counter()
+        #obj.__reset_counter()
         return obj
 
     @staticmethod
