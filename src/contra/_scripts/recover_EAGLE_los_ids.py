@@ -18,6 +18,8 @@ import time
 from matplotlib import pyplot as plt
 from unyt import unyt_quantity
 
+WAIT_SECONDS = 10*60 # 10 minutes
+
 
 
 class PartialZip(Iterator):
@@ -174,7 +176,7 @@ def __main(
 
     STOPWATCH = Stopwatch("Command", print_on_start = False, show_time_since_lap = False)
     CHUNK_STOPWATCH = Stopwatch("Section", print_on_start = False, show_time_since_lap = True, synchronise = STOPWATCH)
-    
+
     if not os.path.exists(los_directory):
         Console.print_error(f"Line-of-sight file directory \"{los_directory}\" does not exist.")
         Console.print_info("Terminating...")
@@ -214,6 +216,7 @@ def __main(
             Console.print_info("Terminating...")
             return
         start_file_index = los_files.index(parallel_start_file)
+        print(los_files[start_file_index], flush = True)
         los_files = los_files[start_file_index : (start_file_index + cast(int, number_of_files_to_do))]
 
     # Get the snipshot filepaths in redshift order (assending z)
@@ -257,6 +260,8 @@ def __main(
     # Itterate over one line-of-sight file at a time
     # If a single file is selected, just use that file only
 
+    print("HERE", flush = True)
+
     for f in los_files if selected_file is None else (selected_file, ):
 
         # Get an object of reading los data
@@ -271,14 +276,33 @@ def __main(
         # This will retain any sightlines already completed
 
         completed_sightlines = 0
+        complete_sightline_indexes = []
+        incomplete_sightline_indexes = []
         if output_file_group_name in complete_files:
+
+            print("HERE 1a", flush = True)
+            print(output_file_group_name, flush = True)
+
             with h5.File(output_file, "r") as file:
-                completed_sightlines = len(list(file[output_file_group_name]))
+
+                print("HERE 1b", flush = True)
+
+                complete_sightline_indexes = [int(v[3:]) for v in file[output_file_group_name]]
+#                completed_sightlines = len(list(file[output_file_group_name]))
+                completed_sightlines = len(complete_sightline_indexes)
             if completed_sightlines == len(sightline_file) and not force_selection:
+
+                print("HERE 1c", flush = True)
+                print(complete_sightline_indexes, flush = True)
+
                 continue
+            incomplete_sightline_indexes = [i for i in range(len(sightline_file)) if i not in complete_sightline_indexes]
         else:
             with h5.File(output_file, "a") as file:
                 file.create_group(output_file_group_name)
+            incomplete_sightline_indexes = list(range(len(sightline_file)))
+
+        print("HERE", flush = True)
 
         # State which file is being targeted
 
@@ -293,12 +317,15 @@ def __main(
         do_sightlines: Iterable
         if selected_los_index is None:
             # Do only incomplete lines
-            do_sightlines = range(completed_sightlines, len(sightline_file))
+            do_sightlines = incomplete_sightline_indexes # range(completed_sightlines, len(sightline_file))
         else:
             # Do only the specified los, but first check if we are allowed to overwrite it should it already exist (but only if any data will be written)!
-            min_valid_sightline = 0 if force_selection else completed_sightlines
-            if selected_los_particle_index is None and (selected_los_index < min_valid_sightline or selected_los_index >= len(sightline_file)):
-                Console.print_error(f"Selected sightline ({selected_los_index}) outside of valid range (inclusive) {min_valid_sightline} -> {len(sightline_file) - 1}.\nTo re-compute a sightline for which there is already data, use the --force-selection flag.")
+#            min_valid_sightline = 0 if force_selection else completed_sightlines
+#            if selected_los_particle_index is None and (selected_los_index < min_valid_sightline or selected_los_index >= len(sightline_file)):
+#                Console.print_error(f"Selected sightline ({selected_los_index}) outside of valid range (inclusive) {min_valid_sightline} -> {len(sightline_file) - 1}.\nTo re-compute a sightline for which there is already data, use the --force-selection flag.")
+#                return
+            if selected_los_particle_index is None and (selected_los_index if selected_los_index >= 0 else (len(sightline_file) - selected_los_index)) not in incomplete_sightline_indexes: # (selected_los_index < min_valid_sightline or selected_los_index >= len(sightline_file)):
+                Console.print_error(f"Selected sightline ({selected_los_index}) already completed.\nTo re-compute a sightline for which there is already data, use the --force-selection flag.")
                 return
             do_sightlines = (selected_los_index, )
 
@@ -607,7 +634,27 @@ def __main(
 
             if selected_los_particle_index is None:
                 (print if not (Settings.verbose or Settings.debug) else Console.print_info)("duplicates:", len(los) - np.unique(selected_particle_ids.data).shape[0], end = (" " if not (Settings.verbose or Settings.debug) else "\n"), flush = True)
-                with h5.File(output_file, "a") as file:
+                file: h5.File|None = None
+                file_open_start_time = time.time()
+                while time.time() - file_open_start_time < WAIT_SECONDS:
+                    try:
+                        file = h5.File(output_file, "a")
+                        break
+                    except (BlockingIOError, OSError):#TODO: figure out exactly which exception this is!
+                        file = None
+                        time.sleep(10)
+                if file is None:
+                    Console.print_error(f"Unable to aquire write access to output file within the allotted time ({WAIT_SECONDS}s). Moving to next line-of-sight.")
+                    los_data.free(force = True)
+                    selected_particle_indexes.free(force = True)
+                    selected_particle_ids.free(force = True)
+                    masked__low_z_snipshot_ids.free(force = True)
+                    masked__high_z_snipshot_particle_data.free(force = True)
+                    masked__interpolated_snipshot_particle_data.free(force = True)
+                    masked__low_z_snipshot_particle_data.free(force = True)
+                    #TODO: do the resource cleanup in a better way!
+                    continue
+                with file:
                     if f"LOS{los_index}" in file[output_file_group_name]:
                         if force_selection:
                             del file[output_file_group_name][f"LOS{los_index}"]
