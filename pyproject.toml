@@ -42,6 +42,7 @@ Issues = "https://github.com/QuasarX1/contra/issues"
 Source = "https://github.com/QuasarX1/contra"
 
 [project.scripts]
+easy-sbatch = "contra._scripts.easy_python_sbatch:main"
 contra = "contra._scripts.contra:main"
 contra-setup = "contra._scripts.contra_setup:main"
 contra-run = "contra._scripts.contra_run:main"
@@ -51,6 +52,7 @@ contra-plot-igm-occupancy-hist = "contra._scripts.plot_particle_histograms:main"
 contra-plot-environment = "contra._scripts.plot_temp_density:main"
 contra-generate-eagle-los-ids = "contra._scripts.recover_EAGLE_los_ids:main"
 contra-plot-eagle-recovered-los = "contra._scripts.plot_recovered_line_of_sight:main"
+contra-check-eagle = "contra._scripts.check_eagle_data:main"
 
 [tool.hatch.version]
 path = "src/contra/__about__.py"

@@ -319,7 +319,8 @@ class SnapshotEAGLE(SnapshotBase):
 
     @staticmethod
     def scrape_filepaths(#TODO: create file info objects that do this with a common interface for generating these objects to allow each subclass to keep the filepath formatting clear and obscured from the user
-        catalogue_directory: str
+        catalogue_directory: str,
+        snipshots: bool = False
     ) -> Tuple[
             Tuple[
                 str,
@@ -330,7 +331,11 @@ class SnapshotEAGLE(SnapshotBase):
             ...
          ]:
 
-        pattern = re.compile(r'.*snapshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]snap_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
+#        pattern = re.compile(r'.*snapshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]snap_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
+        if not snipshots:
+            pattern = re.compile(r'.*snapshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]snap_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
+        else:
+            pattern = re.compile(r'.*snipshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]snip_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
 
         snapshots: Dict[str, List[str, List[str], List[int], str]] = {}
 
@@ -345,7 +350,7 @@ class SnapshotEAGLE(SnapshotBase):
                     extension = match.group("extension")
 
                     tag = f"{number}_z{redshift_int}p{redshift_dec}"
-                    basename = os.path.join(f"snapshot_{tag}", f"snap_{tag}")
+                    basename = os.path.join(f"snapshot_{tag}", f"snap_{tag}") if not snipshots else os.path.join(f"snipshot_{tag}", f"snip_{tag}")
 
                     if tag not in snapshots:
                         snapshots[tag] = [basename, [number], [parallel_index], extension]
@@ -374,7 +379,8 @@ class SnapshotEAGLE(SnapshotBase):
         basename: Union[str, None] = None,
         snapshot_number_strings: Union[List[str], None] = None,
         file_extension: Union[str, None] = None,
-        parallel_ranks: Union[List[int], None] = None
+        parallel_ranks: Union[List[int], None] = None,
+        snipshots: bool = False
     ) -> Dict[
             str,
             Union[str, Dict[int, str]]
@@ -382,12 +388,13 @@ class SnapshotEAGLE(SnapshotBase):
         if basename is not None or file_extension is not None or parallel_ranks is not None:
             raise NotImplementedError("TODO: some fields not supported for EAGLE. Change API to use objects with file info specific to sim types.")#TODO:
 
-        snap_file_info = { snap[1][0] : snap for snap in SnapshotEAGLE.scrape_filepaths(directory) }
+        snap_file_info = { snap[1][0] : snap for snap in SnapshotEAGLE.scrape_filepaths(directory, snipshots = snipshots) }
         selected_files = {}
         for num in (snapshot_number_strings if snapshot_number_strings is not None else snap_file_info.keys()):
             if num not in snap_file_info:
                 raise FileNotFoundError("Snapshot numbers provided not all present in directory.")
-            selected_files[num] = { i : os.path.join("/mnt/aridata1/users/aricrowe/replacement_EAGLE_snap/RefL0100N1504" if num == "006" else directory, f"{snap_file_info[num][0]}.{i}.{snap_file_info[num][3]}") for i in snap_file_info[num][2] }
+#            selected_files[num] = { i : os.path.join("/mnt/aridata1/users/aricrowe/replacement_EAGLE_snap/RefL0100N1504" if num == "006" else directory, f"{snap_file_info[num][0]}.{i}.{snap_file_info[num][3]}") for i in snap_file_info[num][2] }
+            selected_files[num] = { i : os.path.join(directory, f"{snap_file_info[num][0]}.{i}.{snap_file_info[num][3]}") for i in snap_file_info[num][2] }
 
         return selected_files
 
