@@ -14,8 +14,9 @@ from QuasarCode import Settings, Console
 
 from .._ParticleType import ParticleType
 from ._SnapshotBase import SnapshotBase
+from ._builtin_simulation_types import SimType_EAGLE
 
-class SnapshotEAGLE(SnapshotBase):
+class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
     """
     EAGLE snapshot data.
     """

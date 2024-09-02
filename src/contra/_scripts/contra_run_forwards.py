@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: None
 from .. import VERSION, ParticleType, ArrayReorder, ArrayReorder_2, ArrayMapping, SharedArray, SharedArray_TransmissionData, SharedArray_Shepherd, SharedArray_ParallelJob
 from .._L_star import get_L_star_halo_mass_of_z
-from ..io import SnapshotBase, SnapshotEAGLE, SnapshotSWIFT, CatalogueBase, CatalogueSUBFIND, CatalogueSOAP, OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, CheckpointData
+from ..io import SnapshotBase, SnapshotEAGLE, FileTreeScraper_EAGLE, SnapshotSWIFT, CatalogueBase, CatalogueSUBFIND, CatalogueSOAP, OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, CheckpointData
 
 import datetime
 import os
@@ -24,14 +24,9 @@ def main():
         command = "contra-run-complete",
         authors = [ScriptWrapper.AuthorInfomation()],
         version = ScriptWrapper.VersionInfomation.from_string("1.0.0"),
-        edit_date = datetime.date(2024, 8, 30),
+        edit_date = datetime.date(2024, 8, 31),
         description = "Itterate forwards in time through the snapshots and record the properties of the last halo a particle encountered for each snapshot.",
         parameters = ScriptWrapper.ParamSpec(
-            ScriptWrapper.PositionalParam[str](
-                name = "target_snapshot",
-                short_name = "t",
-                description = "Identifier of the snapshot file that defines the initial particle distribution.\nFor SWIFT data, this is usually a four digit number: e.g. \"0015\".\nFor EAGLE data, this is a three digit number: e.g. \"015\"."
-            ),
             ScriptWrapper.OptionalParam[str](
                 name = "snapshots",
                 sets_param = "snapshot_directory",
@@ -103,35 +98,6 @@ def main():
                 name = "allow-overwrite",
                 description = "Allow an existing output file to be overwritten."
             ),
-            ScriptWrapper.OptionalParam[Union[List[str], None]](
-                name = "search-snapshots",
-                conversion_function = ScriptWrapper.make_list_converter(";"),
-                description = "Identifiers of snapshots that should be searched (in search order)."
-            ),
-            ScriptWrapper.Flag(
-                name = "ignore-target-snapshot",
-                inverted = True,
-                sets_param = "require_include_target_snapshot",
-                description = "Do not add the target snapshot to the search list if manually ommitted."
-            ),
-            ScriptWrapper.Flag(
-                name = "minimal-statistics",
-                sets_param = "do_minimal_stats_only",
-                description = "Calculate only basic snapshot statistics.\nSignificant performance increas but minimal data output.\nIncompatible with --skip-statistics.",
-                conflicts = ["skip-statistics"]
-            ),
-            ScriptWrapper.Flag(
-                name = "skip-statistics",
-                inverted = True,
-                sets_param = "do_stats",
-                description = "Do not calculate snapshot statistics.\nSignificant performance increas but minimal data output.\nIncompatible with --minimal-statistics.",
-                conflicts = ["minimal-statistics"]
-            ),
-            ScriptWrapper.Flag(
-                name = "enable-checkpointing",
-                sets_param = "do_checkpoint",
-                description = "Write a checkpoint to the output file after every snapshot search."
-            ),
             ScriptWrapper.Flag(
                 name = "restart",
                 description = "Use checkpoints to restart the search from the latest avalible checkpoint.\nThis requires the output file to be explicitly specified with overwriting and checkpointing enabled.",
@@ -143,7 +109,7 @@ def main():
 
 
 async def __main(
-            target_snapshot: str,
+#            target_snapshot: str,
             snapshot_directory: str,
             snapshot_basename: Union[str, None],
             catalogue_directory: Union[str, None],
@@ -157,11 +123,6 @@ async def __main(
             do_dark_matter: bool,
             output_filepath: str,
             allow_overwrite: bool,
-            search_snapshots: Union[List[str], None],
-            require_include_target_snapshot: bool,
-            do_minimal_stats_only: bool,
-            do_stats: bool,
-            do_checkpoint: bool,
             restart: bool
           ) -> None:
 
@@ -205,49 +166,8 @@ async def __main(
     # Ensure that the path is an absolute path
     snapshot_directory = os.path.abspath(snapshot_directory)
 
-    snapshot_files = new_snapshot_type.generate_filepaths_from_partial_info(snapshot_directory, snapshot_basename)
-
-    # Ensure requested snapshots are valid
-    if target_snapshot not in snapshot_files:
-        Console.print_error(f"Target snapshot identifier \"{target_snapshot}\" not found. Valid values are:\n    " + "\n    ".join(snapshot_files.keys()))
-    if search_snapshots is not None:
-        for test_snap_key in search_snapshots:
-            if test_snap_key not in snapshot_files:
-                Console.print_error(f"Search snapshot identifier \"{test_snap_key}\" not found. Valid values are:\n    " + "\n    ".join(snapshot_files.keys()))
-
-    # Identify search target snapshots
-    search_snapshot_file_order: List[str]
-    if search_snapshots is None:
-        search_snapshot_file_order = new_snapshot_type.get_snapshot_order(snapshot_files.keys(), reverse = True)
-        search_snapshot_file_order = search_snapshot_file_order[search_snapshot_file_order.index(target_snapshot) :]
-    else:
-        search_snapshot_file_order = []
-        if target_snapshot not in search_snapshots and require_include_target_snapshot:
-            search_snapshot_file_order.append(target_snapshot)
-        search_snapshot_file_order.extend(search_snapshots)
-
-    if isinstance(snapshot_files[search_snapshot_file_order[0]], str):
-        Console.print_verbose_info("Got the following snapshot files:\n    " + "\n    ".join([snapshot_files[key] for key in search_snapshot_file_order]))
-    else:
-        Console.print_verbose_info("Got the following snapshot files:\n    " + "\n    ".join([(snapshot_files[key][min(snapshot_files[key].keys())] + f" ({min(snapshot_files[key].keys())} -> {max(snapshot_files[key].keys())})") for key in search_snapshot_file_order]))
-
-    # Get filepath info for catalogue files
-
-    # Ensure that the path is an absolute path
-    catalogue_directory = os.path.abspath(catalogue_directory) if catalogue_directory is not None else snapshot_directory
-
-    catalogue_files = new_catalogue_type.generate_filepaths_from_partial_info(catalogue_directory, catalogue_membership_basename, catalogue_properties_basename, snapshot_number_strings = search_snapshot_file_order)
-
-    if isinstance(catalogue_files[search_snapshot_file_order[0]][0], str):
-        Console.print_verbose_info("Got the following catalogue membership files:\n    " + "\n    ".join([catalogue_files[key][0] for key in search_snapshot_file_order]))
-    else:
-        Console.print_verbose_info("Got the following catalogue membership files:\n    " + "\n    ".join([(catalogue_files[key][0][0] + f" ({0} -> {len(catalogue_files[key][0]) - 1})") for key in search_snapshot_file_order]))
-
-    if isinstance(catalogue_files[search_snapshot_file_order[0]][1], str):
-        Console.print_verbose_info("Got the following catalogue properties files:\n    " + "\n    ".join([catalogue_files[key][1] for key in search_snapshot_file_order]))
-    else:
-        Console.print_verbose_info("Got the following catalogue properties files:\n    " + "\n    ".join([(catalogue_files[key][1][0] + f" ({0} -> {len(catalogue_files[key][1]) - 1})") for key in search_snapshot_file_order]))
-
+    # Get snapshot file information
+    simulation_file_scraper = FileTreeScraper_EAGLE(snapshot_directory)
 
     # Ensure that the path is an absolute path
     output_filepath = os.path.abspath(output_filepath)
@@ -261,50 +181,90 @@ async def __main(
     elif False:#TODO: check for valid file location (to prevent an error at the last minute!)
         pass
 
-
-
-
-
-
-    #TODO: get snapshots
-    #TODO: optionally, get snipshots
-    #TODO: get snapshot catalogues
-    #TODO: optionally, get snipshot catalogues
-    #TODO: optionally, merge snapshot and snipshot to get final order
+    # Create output file
+#    output_file = OutputWriter(output_filepath, overwrite = not restart)
 
     snapshot: SnapshotBase
     catalogue: CatalogueBase
     result_data_shepherd: SharedArray_Shepherd|None = None
     shapshot_particle_ids: SharedArray|None = None
-    snapshot_halo_ids: SharedArray|None = None
-    snapshot_halo_masses: SharedArray|None = None
-    snapshot_halo_redshifts: SharedArray|None = None
+    snapshot_last_halo_ids: SharedArray|None = None
+    snapshot_last_halo_masses: SharedArray|None = None
+    snapshot_last_halo_masses_scaled: SharedArray|None = None
+    snapshot_last_halo_redshifts: SharedArray|None = None
+    snapshot_last_halo_particle_positions: SharedArray|None = None
 
-    searcher = SnapshotSearcher(SnapshotEAGLE, CatalogueSUBFIND) if is_EAGLE else SnapshotSearcher(SnapshotSWIFT, CatalogueSOAP)
-    for snapshot_filepath, catalogue_membership_filepath, catalogue_properties_filepath in zip():
+    if not restart:
+        Console.print_info("Creating file...", end = "")
+
+#        with output_file:
+#            output_file.write_header(HeaderDataset(
+#                version = VersionInfomation.from_string(VERSION),
+#                date = start_date,
+#                target_snapshot = "",
+#                target_catalogue_membership_file = "",
+#                target_catalogue_properties_file = "",
+#                simulation_type = "SWIFT" if is_SWIFT else "EAGLE",
+#                redshift = -1,
+#                N_searched_snapshots = N_snapshots,
+#                output_file = output_filepath,
+#                has_gas = do_gas,
+#                has_stars = do_stars,
+#                has_black_holes = do_black_holes,
+#                has_dark_matter = do_dark_matter,
+#                has_statistics = False
+#            ))
+
+        print("done")
+
+    else:
+
+        Console.print_info("Reading checkpoint data:")
+
+        # Read checkpoint data
+        with OutputReader(output_filepath) as output_file_reader:
+
+            Console.print_info("    Loading data...", end = "")
+
+            checkpoints: Dict[ParticleType, CheckpointData] = { part_type : output_file_reader.read_checkpoint(part_type) for part_type in particle_types }
+
+            print("done")
+
+#        Console.print_info(f"    Reastarting from snapshot {last_complete_snap_index + 1}/{N_snapshots}")
+    
+    Console.print_info("Running search.")
+
+
+    searcher = SnapshotSearcher(SnapshotEAGLE, CatalogueSUBFIND, lambda _: 1.0) if is_EAGLE else SnapshotSearcher(SnapshotSWIFT, CatalogueSOAP, lambda _: 1.0)
+    for catalogue_info in simulation_file_scraper.snipshot_catalogues:
+        catalogue = catalogue_info.load()
+        snapshot = catalogue.snapshot
         (
-            snapshot,
+            result_data_shepherd,
+            shapshot_particle_ids,
+            snapshot_last_halo_ids,
+            snapshot_last_halo_masses,
+            snapshot_last_halo_masses_scaled,
+            snapshot_last_halo_redshifts,
+            snapshot_last_halo_particle_positions
+        ) = searcher(
             catalogue,
             result_data_shepherd,
             shapshot_particle_ids,
-            snapshot_halo_ids,
-            snapshot_halo_masses,
-            snapshot_halo_redshifts
-        ) = searcher(
-            snapshot_filepath, catalogue_membership_filepath, catalogue_properties_filepath,
-            result_data_shepherd,
-            shapshot_particle_ids,
-            snapshot_halo_ids,
-            snapshot_halo_masses,
-            snapshot_halo_redshifts
+            snapshot_last_halo_ids,
+            snapshot_last_halo_masses,
+            snapshot_last_halo_masses_scaled,
+            snapshot_last_halo_redshifts,
+            snapshot_last_halo_particle_positions
         )
 
-        save(
-            shapshot_particle_ids,
-            snapshot_halo_ids,
-            snapshot_halo_masses,
-            snapshot_halo_redshifts
-        )
+    #TODO:
+#        save(
+#            shapshot_particle_ids,
+#            snapshot_halo_ids,
+#            snapshot_halo_masses,
+#            snapshot_halo_redshifts
+#        )
 
     if result_data_shepherd is not None: # Check just in case no snapshots were itterated over!
         result_data_shepherd.free()
@@ -317,24 +277,7 @@ async def __main(
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+'''
     Console.print_info("Loading snapshot and catalogue files...", end = "\n" if (is_EAGLE and Settings.debug) else "")
     timer_start = datetime.datetime.now()
 
@@ -588,7 +531,7 @@ async def __main(
     print("done")
 
     Console.print_info("Finished. Stopping...")
-
+'''
 
 
 
@@ -606,16 +549,16 @@ T_snapshot = TypeVar("T_snapshot", bound = SnapshotBase)
 T_catalogue = TypeVar("T_catalogue", bound = CatalogueBase)
 class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
 
-    def __init__(self, snapshot_type: type[T_snapshot], catalogue_type: type[T_catalogue]):
+    def __init__(self, snapshot_type: type[T_snapshot], catalogue_type: type[T_catalogue], mass_of_L_star_at_z: Callable[[float], float]):
 
         self.__snapshot_type = snapshot_type
         self.__catalogue_type = catalogue_type
 
+        self.__get_mass_of_L_star = mass_of_L_star_at_z
+
     def __call__(
             self,
-            snapshot_filepath: str,
-            catalogue_membership_filepath: str,
-            catalogue_properties_filepath: str,
+            catalogue: T_catalogue,
             prior_particle_data_shepherd: SharedArray_Shepherd|None,
             prior_particle_ids: SharedArray|None,
             prior_particle_last_halo_ids: SharedArray|None,
@@ -623,10 +566,14 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
             prior_particle_last_halo_masses_scaled: SharedArray|None,
             prior_particle_last_halo_redshifts: SharedArray|None,
             prior_particle_last_halo_positions: SharedArray|None
-    ) -> tuple[T_snapshot, T_catalogue, SharedArray_Shepherd, SharedArray, SharedArray, SharedArray, SharedArray, SharedArray, SharedArray]:
-
-        snapshot: T_snapshot = self.__snapshot_type(snapshot_filepath)
-        catalogue: T_catalogue = self.__catalogue_type(catalogue_membership_filepath, catalogue_properties_filepath, snapshot)
+    ) -> tuple[SharedArray_Shepherd, SharedArray, SharedArray, SharedArray, SharedArray, SharedArray, SharedArray]:
+        
+        if not isinstance(catalogue, self.__catalogue_type):
+            raise TypeError(f"Unexpected catalogue type {type(catalogue).__name__}. Expected {self.__catalogue_type.__name__}.")
+        if not isinstance(catalogue.snapshot, self.__snapshot_type):
+            raise TypeError(f"Unexpected snapshot type {type(catalogue.snapshot).__name__}. Expected {self.__snapshot_type.__name__}.")
+        
+        snapshot = catalogue.snapshot
 
         n_particles = snapshot.number_of_particles(ParticleType.gas)
 
@@ -678,7 +625,7 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
                 snapshot_particle_last_halo_ids,
                 snapshot_particle_last_halo_masses,
                 snapshot_particle_last_halo_masses_scaled,
-                ,#TODO:
+                self.__get_mass_of_L_star(snapshot.redshift),
                 halo_ids,
                 halo_masses,
                 particle_halo_ids
@@ -687,7 +634,7 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
             snapshot_particle_last_halo_redshifts.data[snapshot_particle_update_mask.data] = snapshot.redshift
             snapshot_particle_last_halo_positions.data[snapshot_particle_update_mask.data, :] = snapshot_positions.data[snapshot_particle_update_mask.data, :]
 
-        return snapshot, catalogue, results_shepherd, snapshot_particle_ids, snapshot_particle_last_halo_ids, snapshot_particle_last_halo_masses, snapshot_particle_last_halo_masses_scaled, snapshot_particle_last_halo_redshifts, snapshot_particle_last_halo_positions
+        return results_shepherd, snapshot_particle_ids, snapshot_particle_last_halo_ids, snapshot_particle_last_halo_masses, snapshot_particle_last_halo_masses_scaled, snapshot_particle_last_halo_redshifts, snapshot_particle_last_halo_positions
 
 #    @staticmethod
 #    def find_haloes(

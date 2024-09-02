@@ -100,8 +100,8 @@ def __main(
     
     snap_info = SnapshotEAGLE.generate_filepaths_from_partial_info(data_directory)
     snip_info = SnapshotEAGLE.generate_filepaths_from_partial_info(data_directory, snipshots = True)
-    cat_info = CatalogueSUBFIND.generate_filepaths_from_partial_info(data_directory)
-    snip_cat_info = CatalogueSUBFIND.generate_filepaths_from_partial_info(data_directory, snipshots = True)
+#    cat_info = CatalogueSUBFIND.generate_filepaths_from_partial_info(data_directory)
+#    snip_cat_info = CatalogueSUBFIND.generate_filepaths_from_partial_info(data_directory, snipshots = True)
     
     Console.print_info(f"Creating output file at \"{output_filepath}\".")
 
@@ -150,9 +150,9 @@ def __main(
                 output_file.write("\n")
     #TODO: store a list of filepaths relitive to the root that need to be re-coppied
 
-    Console.print_info("Doing snapshots.")
-
-    bad_catalogue_numbers, missing_catalogue_file_indexes, corrupted_catalogue_file_indexes = check_catalogue_data(selected_snapshot_catalogue_numbers, cat_info, CATALOGUE_FIELDS_TO_CHECK, CATALOGUE_FIELDS_TO_CHECK__DM, number_of_processes)
+#    Console.print_info("Doing snapshot tatalogue.")
+#
+#    bad_catalogue_numbers, missing_catalogue_file_indexes, corrupted_catalogue_file_indexes = check_catalogue_data(selected_snapshot_catalogue_numbers, cat_info, CATALOGUE_FIELDS_TO_CHECK, CATALOGUE_FIELDS_TO_CHECK__DM, number_of_processes)
 
     Console.print_info("DONE.")
 

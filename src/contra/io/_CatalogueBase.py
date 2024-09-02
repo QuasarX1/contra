@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: None
 from .._ParticleType import ParticleType
 from ._SnapshotBase import SnapshotBase
+from ._SimulationData import SimulationDataBase, T_ISimulation
 
 from abc import ABC, abstractmethod
 from typing import Awaitable, Union, List, Tuple, Dict
@@ -12,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import numpy as np
 from unyt import unyt_array
 
-class CatalogueBase(ABC):
+class CatalogueBase(SimulationDataBase[T_ISimulation]):
     """
     Base class type for catalogue data reader types.
     """

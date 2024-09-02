@@ -15,8 +15,9 @@ from .._ParticleType import ParticleType
 from .._ArrayReorder import ArrayReorder
 from ._CatalogueBase import CatalogueBase
 from ._SnapshotEAGLE import SnapshotEAGLE
+from ._builtin_simulation_types import SimType_EAGLE
 
-class CatalogueSUBFIND(CatalogueBase):
+class CatalogueSUBFIND(CatalogueBase[SimType_EAGLE]):
     """
     SUBFIND catalogue data (EAGLE).
     """

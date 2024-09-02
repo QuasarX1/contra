@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: None
 from .._ParticleType import ParticleType
+from ._SimulationData import SimulationDataBase, T_ISimulation
 
 from abc import ABC, abstractmethod
 from typing import Awaitable, Union, List, Tuple, Dict
@@ -13,7 +14,7 @@ import os
 import numpy as np
 from unyt import unyt_array, unyt_quantity
 
-class SnapshotBase(ABC):
+class SnapshotBase(SimulationDataBase[T_ISimulation]):
     """
     Base class type for snapshot data reader types.
     """
