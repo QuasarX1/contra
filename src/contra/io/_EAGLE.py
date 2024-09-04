@@ -10,6 +10,7 @@ import os
 import re
 from collections.abc import Iterator
 from typing import TypeVar, Generic
+from functools import singledispatchmethod
 
 
 
@@ -85,6 +86,17 @@ class SimulationSnapOrSnipFiles_EAGLE(SimulationFileTreeBase[SnapshotEAGLE], Gen
 
     def __iter__(self) -> Iterator[T]:
         return iter(self.__files)
+
+    def __len__(self) -> int:
+        return len(self.__files)
+
+    @singledispatchmethod
+    def __get_item__(self, key: int) -> T:
+        return self.__files[key]
+
+    __get_item__.register(slice)
+    def _(self, key: slice) -> tuple[T, ...]:
+        return tuple(self.__files[key])
 
     def get_info(self) -> tuple[T, ...]:
         return tuple(self.__files)
@@ -253,6 +265,17 @@ class SimulationSnapOrSnipCatalogueFiles_EAGLE(SimulationFileTreeBase[CatalogueS
 
     def __iter__(self) -> Iterator[U]:
         return iter(self.__files)
+    
+    def __len__(self) -> int:
+        return len(self.__files)
+
+    @singledispatchmethod
+    def __get_item__(self, key: int) -> U:
+        return self.__files[key]
+
+    __get_item__.register(slice)
+    def _(self, key: slice) -> tuple[U, ...]:
+        return tuple(self.__files[key])
 
     def get_info(self) -> tuple[U, ...]:
         return tuple(self.__files)

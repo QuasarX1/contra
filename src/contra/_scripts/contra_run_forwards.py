@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: None
 from .. import VERSION, ParticleType, ArrayReorder, ArrayReorder_2, ArrayMapping, SharedArray, SharedArray_TransmissionData, SharedArray_Shepherd, SharedArray_ParallelJob
 from .._L_star import get_L_star_halo_mass_of_z
-from ..io import SnapshotBase, SnapshotEAGLE, FileTreeScraper_EAGLE, SnapshotSWIFT, CatalogueBase, CatalogueSUBFIND, CatalogueSOAP, OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, CheckpointData
+from ..io import SnapshotBase, SnapshotEAGLE, FileTreeScraper_EAGLE, SnapshotSWIFT, CatalogueBase, CatalogueSUBFIND, CatalogueSOAP#, OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, CheckpointData
+from ..io._Output_Objects__forwards import OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset
 
 import datetime
 import os
@@ -138,16 +139,12 @@ async def __main(
         elif is_SWIFT:
             Console.print_verbose_info("Snapshot type: SWIFT")
 
-    # Identify snapshot and catalogue types
-    new_snapshot_type = SnapshotEAGLE if is_EAGLE else SnapshotSWIFT
-    new_catalogue_type = CatalogueSUBFIND if is_EAGLE else CatalogueSOAP
-
     Console.print_verbose_info("Particle Types:")
 
     if not (do_gas or do_stars or do_black_holes or do_dark_matter):
         Console.print_verbose_warning("    No particle type(s) specified. Enabling all particle types.")
         do_gas = do_stars = do_black_holes = do_dark_matter = True
-    particle_types = []
+    particle_types: list[ParticleType] = []
     if do_gas:
         particle_types.append(ParticleType.gas)
         Console.print_verbose_info("    Tracking gas particles")
@@ -167,22 +164,23 @@ async def __main(
     snapshot_directory = os.path.abspath(snapshot_directory)
 
     # Get snapshot file information
-    simulation_file_scraper = FileTreeScraper_EAGLE(snapshot_directory)
+    simulation_file_scraper = FileTreeScraper_EAGLE(snapshot_directory)# if is_EAGLE else FileTreeScraper_SWIFT(snapshot_directory)
+    N_snapshots = len(simulation_file_scraper.snipshots if is_EAGLE else simulation_file_scraper.snapshots)
 
     # Ensure that the path is an absolute path
     output_filepath = os.path.abspath(output_filepath)
 
     if os.path.exists(output_filepath):
-        if not allow_overwrite:
+        if not (allow_overwrite or restart):
             Console.print_error("Output file already exists. Either remove it first or explicitley enable overwrite.")
             return
-        else:
+        elif allow_overwrite:
             Console.print_warning("Pre-existing output file will be overwritten")
     elif False:#TODO: check for valid file location (to prevent an error at the last minute!)
         pass
 
     # Create output file
-#    output_file = OutputWriter(output_filepath, overwrite = not restart)
+    output_file = OutputWriter(output_filepath, overwrite = not restart)
 
     snapshot: SnapshotBase
     catalogue: CatalogueBase
@@ -197,351 +195,120 @@ async def __main(
     if not restart:
         Console.print_info("Creating file...", end = "")
 
-#        with output_file:
-#            output_file.write_header(HeaderDataset(
-#                version = VersionInfomation.from_string(VERSION),
-#                date = start_date,
-#                target_snapshot = "",
-#                target_catalogue_membership_file = "",
-#                target_catalogue_properties_file = "",
-#                simulation_type = "SWIFT" if is_SWIFT else "EAGLE",
-#                redshift = -1,
-#                N_searched_snapshots = N_snapshots,
-#                output_file = output_filepath,
-#                has_gas = do_gas,
-#                has_stars = do_stars,
-#                has_black_holes = do_black_holes,
-#                has_dark_matter = do_dark_matter,
-#                has_statistics = False
-#            ))
-
-        print("done")
-
-    else:
-
-        Console.print_info("Reading checkpoint data:")
-
-        # Read checkpoint data
-        with OutputReader(output_filepath) as output_file_reader:
-
-            Console.print_info("    Loading data...", end = "")
-
-            checkpoints: Dict[ParticleType, CheckpointData] = { part_type : output_file_reader.read_checkpoint(part_type) for part_type in particle_types }
-
-            print("done")
-
-#        Console.print_info(f"    Reastarting from snapshot {last_complete_snap_index + 1}/{N_snapshots}")
-    
-    Console.print_info("Running search.")
-
-
-    searcher = SnapshotSearcher(SnapshotEAGLE, CatalogueSUBFIND, lambda _: 1.0) if is_EAGLE else SnapshotSearcher(SnapshotSWIFT, CatalogueSOAP, lambda _: 1.0)
-    for catalogue_info in simulation_file_scraper.snipshot_catalogues:
-        catalogue = catalogue_info.load()
-        snapshot = catalogue.snapshot
-        (
-            result_data_shepherd,
-            shapshot_particle_ids,
-            snapshot_last_halo_ids,
-            snapshot_last_halo_masses,
-            snapshot_last_halo_masses_scaled,
-            snapshot_last_halo_redshifts,
-            snapshot_last_halo_particle_positions
-        ) = searcher(
-            catalogue,
-            result_data_shepherd,
-            shapshot_particle_ids,
-            snapshot_last_halo_ids,
-            snapshot_last_halo_masses,
-            snapshot_last_halo_masses_scaled,
-            snapshot_last_halo_redshifts,
-            snapshot_last_halo_particle_positions
-        )
-
-    #TODO:
-#        save(
-#            shapshot_particle_ids,
-#            snapshot_halo_ids,
-#            snapshot_halo_masses,
-#            snapshot_halo_redshifts
-#        )
-
-    if result_data_shepherd is not None: # Check just in case no snapshots were itterated over!
-        result_data_shepherd.free()
-
-
-
-
-
-
-
-
-
-'''
-    Console.print_info("Loading snapshot and catalogue files...", end = "\n" if (is_EAGLE and Settings.debug) else "")
-    timer_start = datetime.datetime.now()
-
-    # Load target snapshot and catalogue
-    target_snap = new_snapshot_type(snapshot_files[target_snapshot] if isinstance(snapshot_files[target_snapshot], str) else snapshot_files[target_snapshot][min(snapshot_files[target_snapshot].keys())])
-    target_cat = new_catalogue_type(*catalogue_files[target_snapshot], target_snap)
-
-    #snapshots: List[SnapshotBase] = []
-    #catalogues: List[CatalogueBase] = []
-    #for snap_key in search_snapshot_file_order:
-    #    snapshots.append(new_snapshot_type((snapshot_files[snap_key]) if isinstance(snapshot_files[snap_key], str) else snapshot_files[snap_key][min(snapshot_files[snap_key].keys())]) if snap_key != target_snapshot else target_snap)
-    #    catalogues.append(new_catalogue_type(*catalogue_files[snap_key], snapshots[-1]) if snap_key != target_snapshot else target_cat)
-    #N_snapshots = len(snapshots)
-    N_snapshots = len(search_snapshot_file_order)
-
-    print(f"done (took {int((datetime.datetime.now() - timer_start).total_seconds())} s)")
-
-#    # Ensure search values are in increasing redshift (i.e. backwards in time)
-#    snapshots.sort(key = lambda v: v.z)
-#    catalogues.sort(key = lambda v: v.z)
-
-    # Get L_* values for each snapshot's redshift
-    L_star_mass_func = get_L_star_halo_mass_of_z()
-    #L_star_mass_by_snapshot: List[unyt_quantity] = [L_star_mass_func(cat.z) for cat in catalogues]
-
-
-
-    
-
-    # Create output file
-    output_file = OutputWriter(output_filepath, overwrite = not restart)
-
-    if not restart:
-        Console.print_info("Creating file...", end = "")
-
         with output_file:
             output_file.write_header(HeaderDataset(
                 version = VersionInfomation.from_string(VERSION),
                 date = start_date,
-                target_snapshot = target_snap.filepath,
-                target_catalogue_membership_file = target_cat.membership_filepath,
-                target_catalogue_properties_file = target_cat.properties_filepath,
                 simulation_type = "SWIFT" if is_SWIFT else "EAGLE",
-                redshift = target_snap.z,
                 N_searched_snapshots = N_snapshots,
                 output_file = output_filepath,
                 has_gas = do_gas,
                 has_stars = do_stars,
                 has_black_holes = do_black_holes,
                 has_dark_matter = do_dark_matter,
-                has_statistics = do_stats
+                has_statistics = False
             ))
 
         print("done")
-        Console.print_info("Begining reverse search")
 
-        # Perform backwards search
-        #TODO: do star and BH checks need to check gas part table for particle ansestor? how does this work in SWIFT and EAGLE???
+    searcher = SnapshotSearcher(SnapshotEAGLE, CatalogueSUBFIND, lambda _: 1.0) if is_EAGLE else SnapshotSearcher(SnapshotSWIFT, CatalogueSOAP, lambda _: 1.0)
 
-        target_ids                 = { part_type: target_snap.get_IDs(part_type)                                                                  for part_type in particle_types }
-        missing_particles          = { part_type:            np.full_like(target_ids[part_type],          True,   dtype = bool )                  for part_type in particle_types }
-        last_redshift              = { part_type:            np.full_like(target_ids[part_type],          np.nan, dtype = float)                  for part_type in particle_types }
-        last_halo_id               = { part_type:            np.full_like(target_ids[part_type],          -1,     dtype = int  )                  for part_type in particle_types }
-        last_halo_mass             = { part_type: unyt_array(np.full_like(target_ids[part_type],          np.nan, dtype = float), units = "Msun") for part_type in particle_types }
-        last_halo_mass_L_star_frac = { part_type: unyt_array(np.full_like(target_ids[part_type],          np.nan, dtype = float), units = None  ) for part_type in particle_types }
-        pre_ejection_coords        = { part_type: unyt_array(np.full((target_ids[part_type].shape[0], 3), np.nan, dtype = float), units = "Mpc" ) for part_type in particle_types }
+    for particle_type in particle_types:
 
-    else:
+        Console.print_info(f"Running search for {particle_type.name} particles.")
 
-        Console.print_info("Reading checkpoint data:")
-
-        # Read checkpoint data
-        with OutputReader(output_filepath) as output_file_reader:
-
-            Console.print_info("    Loading data...", end = "")
-
-            checkpoints: Dict[ParticleType, CheckpointData] = { part_type : output_file_reader.read_checkpoint(part_type) for part_type in particle_types }
-
-            print("done")
-
-        last_complete_snap_index = None
-        for part_type in particle_types:
-            if last_complete_snap_index is None:
-                last_complete_snap_index = checkpoints[part_type].last_complete_snap_index
-            else:
-                assert last_complete_snap_index == checkpoints[part_type].last_complete_snap_index, "Particle type checkpoints were for different snapshots."
-
-        target_ids                 = { part_type:            target_snap.get_IDs(part_type)                                  for part_type in particle_types }
-        missing_particles          = { part_type:            checkpoints[part_type].missing_particles_mask                   for part_type in particle_types }
-        last_redshift              = { part_type:            checkpoints[part_type].redshifts                                for part_type in particle_types }
-        last_halo_id               = { part_type:            checkpoints[part_type].halo_ids                                 for part_type in particle_types }
-        last_halo_mass             = { part_type: unyt_array(checkpoints[part_type].halo_masses,            units = "Msun")  for part_type in particle_types }
-        last_halo_mass_L_star_frac = { part_type: unyt_array(checkpoints[part_type].halo_masses_scaled,     units = None  )  for part_type in particle_types }
-        pre_ejection_coords        = { part_type: unyt_array(checkpoints[part_type].positions_pre_ejection, units = "Mpc" )  for part_type in particle_types }
-
-        Console.print_info(f"    Reastarting from snapshot {last_complete_snap_index + 1}/{N_snapshots}")
-        Console.print_info("Continuing reverse search")
-
-#    for snap_index, (snap, cat, L_star_mass) in enumerate(zip(snapshots, catalogues, L_star_mass_by_snapshot)):
-    for snap_index, snap_key in enumerate(search_snapshot_file_order):
         if restart:
-            # If running from a checkpoint, find first index that hasn't been completed
-            if snap_index <= last_complete_snap_index:
-                continue
-        
-        snap = new_snapshot_type((snapshot_files[snap_key]) if isinstance(snapshot_files[snap_key], str) else snapshot_files[snap_key][min(snapshot_files[snap_key].keys())]) if snap_key != target_snapshot else target_snap
-        cat = new_catalogue_type(*catalogue_files[snap_key], snap) if snap_key != target_snapshot else target_cat
-        L_star_mass = L_star_mass_func(cat.z)
 
-        Console.print_info(f"Doing snapshot {snap_index + 1}/{N_snapshots} (z={snap.z})")
+            last_completed_numerical_file_number: int
 
-        if cat.number_of_haloes == 0:
-            Console.print_info("    No haloes found. Search of snapshot will be skipped.")
+            Console.print_info("Reading checkpoint data:")
 
-        if do_stats:
+            # Read checkpoint data
+            with OutputReader(output_filepath) as output_file_reader:
 
-            Console.print_verbose_info("    Calculating initial statistics")
+                Console.print_info("    Loading data...", end = "")
 
-            # Compute initial statistics for the snapshot
-            snap_stats = SnapshotStatsDataset.initialise_partial(snap, cat, do_minimal_stats_only)
+                checkpoint = output_file_reader.read_checkpoint(particle_type)
 
-            # These are calculated during the search
-            snap_stats.N_particles_matched = 0
-            snap_stats.particles_matched_total_volume = unyt_quantity(0.0, units = "Mpc**3")
+            if checkpoint is not None:
 
-        if cat.number_of_haloes > 0:
-            # Load halo properties here as some parent haloes might not have target part type members!
-            redshift = cat.z
-            Console.print_verbose_info("    Reading all halo IDs")
-            all_halo_ids = cat.get_halo_IDs()
-            Console.print_verbose_info("    Reading all halo masses")
-            all_halo_masses = cat.get_halo_masses()
+                result_data_shepherd = SharedArray_Shepherd()
+                snapshot_last_halo_ids = SharedArray.as_shared(checkpoint.halo_ids, name = "snap-last-halo-ids", shepherd = result_data_shepherd)
+                snapshot_last_halo_masses = SharedArray.as_shared(checkpoint.halo_masses, name = "snap-last-halo-masses", shepherd = result_data_shepherd)
+                snapshot_last_halo_masses_scaled = SharedArray.as_shared(checkpoint.halo_masses_scaled, name = "snap-last-halo-masses-scaled", shepherd = result_data_shepherd)
+                snapshot_last_halo_redshifts = SharedArray.as_shared(checkpoint.redshifts, name = "snap-last-halo-redshifts", shepherd = result_data_shepherd)
+                snapshot_last_halo_particle_positions = SharedArray.as_shared(checkpoint.positions_pre_ejection, name = "snap-last-halo-particle-positions", shepherd = result_data_shepherd)
 
-        # Perform search for each particle type
-        for part_type in particle_types:
-            Console.print_info(f"    Doing {part_type.name} particles...", end = "\n" if (Settings.verbose or Settings.debug) else "")
+                last_completed_numerical_file_number = int(checkpoint.file_number)
 
-            if cat.number_of_haloes == 0:
-                Console.print_verbose_info("    Skipping")
+                shapshot_particle_ids = SharedArray.as_shared((simulation_file_scraper.snipshots if is_EAGLE else simulation_file_scraper.snapshots).get_by_number(checkpoint.file_number).load().get_IDs(particle_type), name = "snap-particle-ids", shepherd = result_data_shepherd)
 
-            else:
-
-                Console.print_verbose_info("        Reading halo IDs")
-                selected_halo_ids = cat.get_halo_IDs(part_type)
-                Console.print_verbose_info("        Reading top-level halo IDs")
-                selected_top_level_halo_ids = cat.get_halo_top_level_parent_IDs(part_type)
-                Console.print_verbose_info("        Reading catalogue particle IDs")
-                selected_catalogue_particle_ids = cat.get_particle_IDs(part_type)
-                Console.print_verbose_info("        Reading snapshot particle IDs")
-                snapshot_typed_particle_ids = snap.get_IDs(part_type)
-
-                Console.print_verbose_info("        Generating reorder mappings")
-
-                # Use only the top most halo mass
-                mapping_halo_to_selected_top_level = ArrayMapping(all_halo_ids, selected_top_level_halo_ids)
-                selected_top_level_halo_masses = mapping_halo_to_selected_top_level(all_halo_masses)
-
-                # Generate allignment function for catalogue to new matches in snapshot
-                order_cat_particles_to_snap_targets = ArrayReorder.create(selected_catalogue_particle_ids, target_ids[part_type], target_order_filter = missing_particles[part_type])
-                order_snap_to_targets = ArrayReorder.create(snapshot_typed_particle_ids, target_ids[part_type], target_order_filter = missing_particles[part_type])
-                mapping_halo_to_snap_targets = ArrayMapping(
-                    selected_halo_ids,
-                    order_snap_to_targets(
-                        cat.get_halo_IDs_by_snapshot_particle(part_type),
-                        default_value = -1
-                    )
-                )
-
-                Console.print_verbose_info("        Applying mappings")
-
-                # Store values for new matches
-                last_redshift[part_type][order_snap_to_targets.target_filter] = redshift
-                mapping_halo_to_snap_targets(selected_halo_ids,                            output_array = last_halo_id[part_type]              )
-                mapping_halo_to_snap_targets(selected_top_level_halo_masses,               output_array = last_halo_mass[part_type]            )
-                mapping_halo_to_snap_targets(selected_top_level_halo_masses / L_star_mass, output_array = last_halo_mass_L_star_frac[part_type])
-                order_snap_to_targets(       snap.get_positions(part_type),                output_array = pre_ejection_coords[part_type]       )
-
-                # Update the tracking filter
-                missing_particles[part_type][order_cat_particles_to_snap_targets.target_filter] = False
-
-            if do_stats:
-
-                Console.print_verbose_info("        Computing statistics")
-
-                # Update stats
-                n_matched = int(order_cat_particles_to_snap_targets.target_filter.sum()) if cat.number_of_haloes > 0 else 0
-                setattr(snap_stats, f"N_particles_matched_{part_type.name.replace(' ', '_')}", n_matched)
-                snap_stats.N_particles_matched = snap_stats.N_particles_matched + n_matched
-                if not do_minimal_stats_only:
-                    setattr(snap_stats, f"N_halo_particles_{part_type.name.replace(' ', '_')}", len(selected_catalogue_particle_ids) if cat.number_of_haloes > 0 else 0)
-                    matched_volume = (((snap.get_smoothing_lengths(part_type)[np.isin(snapshot_typed_particle_ids, selected_catalogue_particle_ids)])**3).sum() * (np.pi * (4/3))) if cat.number_of_haloes > 0 else unyt_quantity(0.0, units = "Mpc**3")
-                    setattr(snap_stats, f"particles_matched_total_volume_{part_type.name.replace(' ', '_')}", unyt_quantity(matched_volume.to("Mpc**3").value, units = "Mpc**3"))
-                    snap_stats.particles_matched_total_volume = snap_stats.particles_matched_total_volume + matched_volume
-
-            if (Settings.verbose or Settings.debug):
-                Console.print_info("        done")
-            else:
                 print("done")
 
-        if do_stats:
+                Console.print_info(f"    Reastarting from {'snapshot' if not is_EAGLE else 'snipshot'} {last_completed_numerical_file_number + 1}/{N_snapshots}")
 
-            Console.print_verbose_info("    Writing statistics to file")
+            else:
+                last_completed_numerical_file_number = -1
+                print("failed - no data to restart from.")
 
-            with output_file:
-                output_file.write_snapshot_stats_dataset(snap_index, snap_stats, do_minimal_stats_only)
+        for catalogue_info in (simulation_file_scraper.snipshot_catalogues if is_EAGLE else simulation_file_scraper.catalogues):
 
-            if Settings.verbose or Settings.debug:
-                (Console.print_info if Settings.verbose else Console.print_debug)(f"    Stats for snapshot {snap_index + 1}:\n        " + str(snap_stats).replace("\n", "\n        "))
+            if restart and catalogue_info.number_numerical <= last_completed_numerical_file_number:
+                Console.print_info(f"{catalogue_info.number} already complete. Skipping." if not is_EAGLE else f"{catalogue_info.number} (redshift {catalogue_info.tag_redshift}) already complete. Skipping.")
+                continue
+            Console.print_info(f"Doing {catalogue_info.number}" if not is_EAGLE else f"Doing {catalogue_info.number} (redshift {catalogue_info.tag_redshift})")
 
-        if do_checkpoint:
+            catalogue = catalogue_info.load()
+            snapshot = catalogue.snapshot
 
-            Console.print_verbose_info("    Writing checkpoint to file")
+            if not is_EAGLE:
+                Console.print_info(f"    Redshift {catalogue.redshift}")
+            if len(catalogue) == 0:
+                Console.print_info("    No halos. Skipping.")
+                continue
 
-            with output_file:
-                for part_type in particle_types:
-                    output_file.write_checkpoint(
-                        CheckpointData(
-                            particle_type            = part_type,
-                            missing_particles_mask   = missing_particles[part_type],
-                            redshifts                = last_redshift[part_type],
-                            halo_ids                 = last_halo_id[part_type],
-                            halo_masses              = last_halo_mass[part_type].value,
-                            halo_masses_scaled       = last_halo_mass_L_star_frac[part_type].value,
-                            positions_pre_ejection   = pre_ejection_coords[part_type].value,
-                            last_complete_snap_index = snap_index
-                        )
-                    )
-
-    Console.print_info("Reverse search complete")
-    Console.print_info("Writing final output", end = "")
-    
-    with output_file:
-        for part_type in particle_types:
-            results = ParticleTypeDataset(
-                particle_type = part_type,
-                redshifts = last_redshift[part_type],
-                halo_ids = last_halo_id[part_type],
-                halo_masses = last_halo_mass[part_type].value,
-                halo_masses_scaled = last_halo_mass_L_star_frac[part_type].value,
-                positions_pre_ejection = pre_ejection_coords[part_type].value
+            (
+                result_data_shepherd,
+                shapshot_particle_ids,
+                snapshot_last_halo_ids,
+                snapshot_last_halo_masses,
+                snapshot_last_halo_masses_scaled,
+                snapshot_last_halo_redshifts,
+                snapshot_last_halo_particle_positions
+            ) = searcher(
+                particle_type,
+                catalogue,
+                result_data_shepherd,
+                shapshot_particle_ids,
+                snapshot_last_halo_ids,
+                snapshot_last_halo_masses,
+                snapshot_last_halo_masses_scaled,
+                snapshot_last_halo_redshifts,
+                snapshot_last_halo_particle_positions
             )
-            try:
+
+            with output_file:
+                results = ParticleTypeDataset(
+                    particle_type = particle_type,
+                    target_redshift = catalogue.redshift,
+                    file_number = catalogue_info.number,
+                    redshifts = snapshot_last_halo_redshifts.data,
+                    halo_ids = snapshot_last_halo_ids.data,
+                    halo_masses = snapshot_last_halo_masses.data,
+                    halo_masses_scaled = snapshot_last_halo_masses_scaled.data,
+                    positions_pre_ejection = snapshot_last_halo_particle_positions.data
+                )
+#                try:
                 output_file.write_particle_type_dataset(results)
-            except KeyError as e:
-                if restart:
-                    output_file.write_particle_type_dataset(results, overwrite = True)
-                    output_file.increase_number_of_snapshots(N_snapshots)
-                else:
-                    raise e
+#                except KeyError as e:
+#                    if restart:
+#                        output_file.write_particle_type_dataset(results, overwrite = True)
+#                        output_file.increase_number_of_snapshots(N_snapshots)
+#                    else:
+#                        raise e
 
-    print("done")
-
-    Console.print_info("Finished. Stopping...")
-'''
-
-
-
-
-
-
-
-
-
-
+        if result_data_shepherd is not None: # Check just in case no snapshots were itterated over!
+            result_data_shepherd.free()
 
 
 
@@ -558,6 +325,7 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
 
     def __call__(
             self,
+            particle_type: ParticleType,
             catalogue: T_catalogue,
             prior_particle_data_shepherd: SharedArray_Shepherd|None,
             prior_particle_ids: SharedArray|None,
@@ -575,17 +343,17 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
         
         snapshot = catalogue.snapshot
 
-        n_particles = snapshot.number_of_particles(ParticleType.gas)
+        n_particles = snapshot.number_of_particles(particle_type)
 
         results_shepherd = SharedArray_Shepherd()
 
-        snapshot_particle_ids = SharedArray.as_shared(snapshot.get_IDs(ParticleType.gas), name = "snap-particle-ids", shepherd = results_shepherd)
+        snapshot_particle_ids = SharedArray.as_shared(snapshot.get_IDs(particle_type), name = "snap-particle-ids", shepherd = results_shepherd)
 
         snapshot_particle_last_halo_ids = SharedArray.create(n_particles, np.int64, name = "snap-last-halo-ids", shepherd = results_shepherd)
         snapshot_particle_last_halo_masses = SharedArray.create(n_particles, np.float64, name = "snap-last-halo-masses", shepherd = results_shepherd)
         snapshot_particle_last_halo_masses_scaled = SharedArray.create(n_particles, np.float64, name = "snap-last-halo-masses-scaled", shepherd = results_shepherd)
         snapshot_particle_last_halo_redshifts = SharedArray.create(n_particles, np.float64, name = "snap-last-halo-redshifts", shepherd = results_shepherd)
-        snapshot_particle_last_halo_positions = SharedArray.create(n_particles, np.float64, name = "snap-last-halo-redshifts", shepherd = results_shepherd)
+        snapshot_particle_last_halo_positions = SharedArray.create((n_particles, 3), np.float64, name = "snap-last-halo-particle-positions", shepherd = results_shepherd)
 
         if prior_particle_data_shepherd is None:
             # This is the first snapshot
@@ -611,11 +379,11 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
 
         with SharedArray_Shepherd() as shared_memory: # Used to free all memory
 
-            halo_ids = SharedArray.as_shared(catalogue.get_halo_IDs(ParticleType.gas), name = "halo-ids", shepherd = shared_memory)
-            halo_masses = SharedArray.as_shared(catalogue.get_halo_masses(ParticleType.gas), name = "halo-masses", shepherd = shared_memory)
-            particle_halo_ids = SharedArray.as_shared(catalogue.get_halo_IDs_by_snapshot_particle(ParticleType.gas), name = "particle-halo-ids", shepherd = shared_memory)
+            halo_ids = SharedArray.as_shared(catalogue.get_halo_IDs(particle_type), name = "halo-ids", shepherd = shared_memory)
+            halo_masses = SharedArray.as_shared(catalogue.get_halo_masses(particle_type), name = "halo-masses", shepherd = shared_memory)
+            particle_halo_ids = SharedArray.as_shared(catalogue.get_halo_IDs_by_snapshot_particle(particle_type), name = "particle-halo-ids", shepherd = shared_memory)
 
-            snapshot_positions = SharedArray.as_shared(snapshot.get_positions(ParticleType.gas), name = "particle-positions", shepherd = shared_memory)
+            snapshot_positions = SharedArray.as_shared(snapshot.get_positions(particle_type), name = "particle-positions", shepherd = shared_memory)
 
             snapshot_particle_update_mask = SharedArray.create(n_particles, np.bool_, name = "snap-particle-update-mask", shepherd = shared_memory)
 

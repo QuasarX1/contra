@@ -4,7 +4,7 @@
 from .._ParticleType import ParticleType
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sized
 from typing import Generic, TypeVar
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
@@ -80,12 +80,18 @@ class SimulationFileTreeLeafBase(Generic[T_ISimulationData], ISimulationFileTree
 
 
 
-class ISimulationFileTree(Interface, Iterable):
+class ISimulationFileTree(Interface, Iterable, Sized):
     def __new__(cls, *args, **kwargs):
         ensure_not_interface(cls, ISimulationFileTree)
         return super().__new__(cls, *args, **kwargs)
     @abstractmethod
     def __iter__(self) -> Iterator[ISimulationFileTreeLeaf]:
+        raise NotImplementedError()
+    @abstractmethod
+    def __len__(self) -> int:
+        raise NotImplementedError()
+    @abstractmethod
+    def __get_item__(self, key: int|slice) -> ISimulationFileTreeLeaf|tuple[ISimulationFileTreeLeaf, ...]:
         raise NotImplementedError()
     @abstractmethod
     def get_info(self) -> tuple[ISimulationFileTreeLeaf, ...]:
@@ -105,6 +111,9 @@ class SimulationFileTreeBase(Generic[T_ISimulationData], ISimulationFileTree):
         return self.__directory
     @abstractmethod
     def __iter__(self) -> Iterator[SimulationFileTreeLeafBase[T_ISimulationData]]:
+        raise NotImplementedError()
+    @abstractmethod
+    def __get_item__(self, key: int|slice) -> SimulationFileTreeLeafBase[T_ISimulationData]|tuple[SimulationFileTreeLeafBase[T_ISimulationData], ...]:
         raise NotImplementedError()
     @abstractmethod
     def get_info(self) -> tuple[SimulationFileTreeLeafBase[T_ISimulationData], ...]:
