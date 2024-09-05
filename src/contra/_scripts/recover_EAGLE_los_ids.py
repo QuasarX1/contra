@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: None
 #BAD_TESTING_SNIPSHOTS = ("snip_354_z000p225.0.hdf5", "snip_288_z000p770.0.hdf5", "snip_224_z001p605.0.hdf5", "snip_159_z002p794.0.hdf5")
 from contra import ParticleType, ArrayReorder, ArrayReorder_2, SharedArray, SharedArray_TransmissionData, calculate_wrapped_displacement, calculate_wrapped_distance, Stopwatch
-from contra.io import SnapshotEAGLE, LineOfSightFileEAGLE
+from contra.io import SnapshotEAGLE, LineOfSightFileEAGLE, FileTreeScraper_EAGLE
 import h5py as h5
 import numpy as np
 from typing import cast, Any, Union, List, Dict, Tuple, Iterable, Iterator
@@ -216,15 +216,18 @@ def __main(
             Console.print_info("Terminating...")
             return
         start_file_index = los_files.index(parallel_start_file)
-        print(los_files[start_file_index], flush = True)
+#        print(los_files[start_file_index], flush = True)
         los_files = los_files[start_file_index : (start_file_index + cast(int, number_of_files_to_do))]
 
     # Get the snipshot filepaths in redshift order (assending z)
 
-    snipshot_files = [os.path.join(folder, files[0].rsplit(".", maxsplit = 2)[0] + ".0.hdf5") for (folder, _, files) in os.walk(data_directory) if folder.rsplit(os.path.sep, maxsplit = 1)[1][:8] == "snipshot"]
-    snipshot_redshifts = [float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 2)[0].replace("p", ".")) for v in snipshot_files]
-    snipshot_files.sort(key = lambda v: float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 2)[0].replace("p", ".")))
-    snipshot_redshifts.sort()
+#    snipshot_files = [os.path.join(folder, files[0].rsplit(".", maxsplit = 2)[0] + ".0.hdf5") for (folder, _, files) in os.walk(data_directory) if folder.rsplit(os.path.sep, maxsplit = 1)[1][:8] == "snipshot"]
+#    snipshot_redshifts = [float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 2)[0].replace("p", ".")) for v in snipshot_files]
+#    snipshot_files.sort(key = lambda v: float(v.rsplit("z", maxsplit = 1)[1].rsplit(".", maxsplit = 2)[0].replace("p", ".")))
+#    snipshot_redshifts.sort()
+    file_scraper = FileTreeScraper_EAGLE(data_directory)
+    snipshot_files = [f.filepath for f in file_scraper.snipshots.get_info()]
+    snipshot_redshifts = [f.tag_redshift for f in file_scraper.snipshots.get_info()]
 
     # Create lookups for the snipshot information by snipshot number
 
@@ -260,7 +263,7 @@ def __main(
     # Itterate over one line-of-sight file at a time
     # If a single file is selected, just use that file only
 
-    print("HERE", flush = True)
+#    print("HERE", flush = True)
 
     for f in los_files if selected_file is None else (selected_file, ):
 
@@ -280,20 +283,20 @@ def __main(
         incomplete_sightline_indexes = []
         if output_file_group_name in complete_files:
 
-            print("HERE 1a", flush = True)
-            print(output_file_group_name, flush = True)
+#            print("HERE 1a", flush = True)
+#            print(output_file_group_name, flush = True)
 
             with h5.File(output_file, "r") as file:
 
-                print("HERE 1b", flush = True)
+#                print("HERE 1b", flush = True)
 
                 complete_sightline_indexes = [int(v[3:]) for v in file[output_file_group_name]]
 #                completed_sightlines = len(list(file[output_file_group_name]))
                 completed_sightlines = len(complete_sightline_indexes)
             if completed_sightlines == len(sightline_file) and not force_selection:
 
-                print("HERE 1c", flush = True)
-                print(complete_sightline_indexes, flush = True)
+#                print("HERE 1c", flush = True)
+#                print(complete_sightline_indexes, flush = True)
 
                 continue
             incomplete_sightline_indexes = [i for i in range(len(sightline_file)) if i not in complete_sightline_indexes]
@@ -302,7 +305,7 @@ def __main(
                 file.create_group(output_file_group_name)
             incomplete_sightline_indexes = list(range(len(sightline_file)))
 
-        print("HERE", flush = True)
+#        print("HERE", flush = True)
 
         # State which file is being targeted
 

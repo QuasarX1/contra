@@ -245,7 +245,7 @@ async def __main(
 
                 print("done")
 
-                Console.print_info(f"    Reastarting from {'snapshot' if not is_EAGLE else 'snipshot'} {last_completed_numerical_file_number + 1}/{N_snapshots}")
+                Console.print_info(f"    Restarting from {'snapshot' if not is_EAGLE else 'snipshot'} {last_completed_numerical_file_number + 1}/{N_snapshots}")
 
             else:
                 last_completed_numerical_file_number = -1
