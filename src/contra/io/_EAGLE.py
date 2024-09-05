@@ -8,18 +8,21 @@ from ._CatalogueSUBFIND import CatalogueSUBFIND
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import TypeVar, Generic
 from functools import singledispatchmethod
 
 
 
 class SnapOrSnipFiles_EAGLE(SimulationFileTreeLeafBase[SnapshotEAGLE]):
-    def __init__(self, number: str, tag: str, filepath: str):
+    def __init__(self, number: str, tag: str, filepath: str, all_filepaths: Iterable[str]):
         self.__number = number
         self.__tag = tag
         self.__filepath = filepath
+        self.__filepaths = tuple(all_filepaths)
         self.__approximate_redshift = float(".".join(self.__tag.split("z")[1].split("p")))
+    def __len__(self) -> int:
+        return len(self.__filepaths)
     def load(self) -> SnapshotEAGLE:
         return SnapshotEAGLE(self.__filepath)
     @property
@@ -37,6 +40,9 @@ class SnapOrSnipFiles_EAGLE(SimulationFileTreeLeafBase[SnapshotEAGLE]):
     @property
     def tag_expansion_factor(self) -> float:
         return 1 / (1 + self.tag_redshift)
+    @property
+    def filepaths(self) -> tuple[str, ...]:
+        return self.__filepaths
     @property
     def filepath(self) -> str:
         return self.__filepath
@@ -78,7 +84,8 @@ class SimulationSnapOrSnipFiles_EAGLE(SimulationFileTreeBase[SnapshotEAGLE], Gen
         for tag in self.__scraped_file_info:
             self.__scraped_file_info[tag][2].sort()
 
-        self.__files: list[T] = [file_type(self.__scraped_file_info[tag][1], tag, os.path.join(self.directory, f"{self.__scraped_file_info[tag][0]}.{self.__scraped_file_info[tag][2][0]}.{self.__scraped_file_info[tag][3]}")) for tag in self.__scraped_file_info]
+        filepaths: dict[str, list[str]] = { tag : [os.path.join(self.directory, f"{self.__scraped_file_info[tag][0]}.{i}.{self.__scraped_file_info[tag][3]}") for i in self.__scraped_file_info[tag][2]] for tag in self.__scraped_file_info }
+        self.__files: list[T] = [file_type(self.__scraped_file_info[tag][1], tag, filepaths[tag][0], filepaths[tag]) for tag in self.__scraped_file_info]
 
         self.__files.sort(key = lambda v: v.number_numerical)
         self.__file_lookup_by_number = { f.number : f for f in self.__files }
@@ -159,6 +166,8 @@ class SnapOrSnipCatalogueFiles_EAGLE(SimulationFileTreeLeafBase[CatalogueSUBFIND
         self.__properties_filepaths = properties_filepaths
         self.__snapshot_info: SnapOrSnipFiles_EAGLE = raw_particlre_data_info
         self.__approximate_redshift = float(".".join(self.__tag.split("z")[1].split("p")))
+    def __len__(self) -> int:
+        return len(self.__properties_filepaths)
     def load(self) -> CatalogueSUBFIND:
         return CatalogueSUBFIND(self.__membership_filepaths, self.__properties_filepaths, self.__snapshot_info.load())
     @property
@@ -176,6 +185,9 @@ class SnapOrSnipCatalogueFiles_EAGLE(SimulationFileTreeLeafBase[CatalogueSUBFIND
     @property
     def tag_expansion_factor(self) -> float:
         return 1 / (1 + self.tag_redshift)
+    @property
+    def filepaths(self) -> tuple[str, ...]:
+        return tuple(self.__properties_filepaths)
     @property
     def filepath(self) -> str:
         return self.__properties_filepaths[0]
@@ -235,7 +247,7 @@ class SimulationSnapOrSnipCatalogueFiles_EAGLE(SimulationFileTreeBase[CatalogueS
                             assert extension == self.__scraped_properties_info[tag][2]
                             self.__scraped_properties_info[tag][3].append(parallel_index)
                     else:
-                        basename = os.path.join(f"particledata_snip_{tag}", f"eagle_subfind_snip_particles_{tag}")
+                        basename = os.path.join(f"particledata_{tag}", f"eagle_subfind_particles_{tag}") if not snipshots else os.path.join(f"particledata_snip_{tag}", f"eagle_subfind_snip_particles_{tag}")
                         if tag not in self.__scraped_membership_info:
                             self.__scraped_membership_info[tag] = (number, basename, extension, [parallel_index])
                         else:

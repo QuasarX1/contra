@@ -58,10 +58,13 @@ class SimulationDataBase(Generic[T_ISimulation], ISimulationData):
 
 
 
-class ISimulationFileTreeLeaf(Interface):
+class ISimulationFileTreeLeaf(Interface, Sized):
     def __new__(cls, *args, **kwargs):
         ensure_not_interface(cls, ISimulationFileTreeLeaf)
         return super().__new__(cls, *args, **kwargs)
+    @abstractmethod
+    def __len__(self) -> int:
+        raise NotImplementedError()
     @abstractmethod
     def load(self) -> ISimulationData:
         raise NotImplementedError()
@@ -72,6 +75,10 @@ class ISimulationFileTreeLeaf(Interface):
     @property
     @abstractmethod
     def number_numerical(self) -> int:
+        raise NotImplementedError()
+    @property
+    @abstractmethod
+    def filepaths(self) -> tuple[str, ...]:
         raise NotImplementedError()
 class SimulationFileTreeLeafBase(Generic[T_ISimulationData], ISimulationFileTreeLeaf):
     @abstractmethod
