@@ -125,7 +125,7 @@ class SimulationSnapOrSnipFiles_EAGLE(SimulationFileTreeBase[SnapshotEAGLE], Gen
         return self.__file_lookup_by_tag[tag]
 
 
-    
+
 class SnapshotFiles_EAGLE(SnapOrSnipFiles_EAGLE):
     pass
 
@@ -309,7 +309,7 @@ class SimulationSnapOrSnipCatalogueFiles_EAGLE(SimulationFileTreeBase[CatalogueS
         return self.__file_lookup_by_tag[tag]
 
 
-    
+
 class SnapshotCatalogueFiles_EAGLE(SnapOrSnipCatalogueFiles_EAGLE):
     pass
 
@@ -346,6 +346,7 @@ class SimulationSnipshotCatalogueFiles_EAGLE(SimulationSnapOrSnipCatalogueFiles_
 
 class FileTreeScraper_EAGLE(object):
     def __init__(self, filepath: str) -> None:
+        self.__root_directory = filepath
         self.__snapshots = SimulationSnapshotFiles_EAGLE(filepath)
         self.__snipshots = SimulationSnipshotFiles_EAGLE(filepath)
         self.__snapshot_catalogues = SimulationSnapshotCatalogueFiles_EAGLE(filepath, self.__snapshots)
@@ -366,3 +367,53 @@ class FileTreeScraper_EAGLE(object):
     @property
     def snipshot_catalogues(self) -> SimulationSnipshotCatalogueFiles_EAGLE:
         return self.__snipshot_catalogues
+
+    @staticmethod
+    def split_filepath(filepath: str) -> tuple[str, str]:
+        """
+        Split the filepath of an EAGLE data file into the
+        """
+        absolute_filepath = os.path.abspath(filepath)
+        folder, file = os.path.split(absolute_filepath)
+        absolute_directory, folder = os.path.split(folder)
+        return (absolute_directory, os.path.join(folder, file))
+
+    @staticmethod
+    def directory_from_filepath(filepath: str) -> str:
+        """
+        Gets the path of the EAGLE data directory from a path to a simulation data file.
+        """
+        return FileTreeScraper_EAGLE.split_filepath(filepath)[0]
+
+    @staticmethod
+    def relitive_filepath(filepath: str) -> str:
+        """
+        Get the component of a filepath relitive to the simulation data directory.
+        """
+        return FileTreeScraper_EAGLE.split_filepath(filepath)[1]
+
+    @staticmethod
+    def make_filepath_with_root(directory: str, relitive_filepath: str) -> str:
+        """
+        Get the path to a data file given the relitive location of the file to the root directory and the path to the simulation root.
+        """
+        return os.path.join(directory, relitive_filepath)
+    
+    def make_filepath(self, relitive_filepath: str) -> str:
+        """
+        Get the path to a data file given the relitive location of the file to the root directory.
+        """
+        return FileTreeScraper_EAGLE.make_filepath_with_root(self.__root_directory, relitive_filepath)
+
+    @staticmethod
+    def get_alternative_filepath_with_root(directory: str, filepath: str) -> str:
+        """
+        Get the path to a data file given the original location of the file and the new path to the simulation root.
+        """
+        return FileTreeScraper_EAGLE.make_filepath_with_root(directory, FileTreeScraper_EAGLE.relitive_filepath(filepath))
+
+    def get_alternative_filepath(self, filepath: str) -> str:
+        """
+        Get the path to a data file given the original location of the file and the new path to the simulation root.
+        """
+        return FileTreeScraper_EAGLE.get_alternative_filepath_with_root(self.__root_directory, filepath)

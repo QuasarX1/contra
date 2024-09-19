@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: None
 import datetime
+import time
 from typing import Any, Union, Collection, List, Tuple, Dict
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,8 @@ from QuasarCode.Tools import Struct, AutoProperty, TypedAutoProperty, NullableTy
 from .. import VERSION
 from .._ParticleType import ParticleType
 from ._Output_Objects import ContraData
+
+WAIT_SECONDS = 10*60 # 10 minutes
 
 
 
@@ -135,7 +138,7 @@ class ParticleFilterFile(Struct):
     line_of_sight_filters: Dict[str, Dict[int, Dict[ParticleType, LineOfSightParticleFilter]]] = TypedAutoProperty[Dict[str, Dict[int, Dict[ParticleType, LineOfSightParticleFilter]]]](TypeShield(dict),
                 doc = "Filters for line-of-sight particles.")
 
-    def __init__(self, filepath: str, **kwargs) -> None:
+    def __init__(self, filepath: str, allow_parallel_write: bool = False, **kwargs) -> None:
         date_specified = "date" in kwargs
         description_specified = "description" in kwargs
         super().__init__(
@@ -143,7 +146,7 @@ class ParticleFilterFile(Struct):
             snapshot_filters = kwargs.pop("snapshot_filters", {}),
             line_of_sight_filters = kwargs.pop("line_of_sight_filters", {}),
             **kwargs)
-        if os.path.exists(filepath):
+        if os.path.exists(filepath) and not allow_parallel_write:
             self.__writable = False
             self.__read()
         else:
@@ -153,6 +156,8 @@ class ParticleFilterFile(Struct):
                 self.date = datetime.date.today()
             if not description_specified:
                 self.description = ""
+
+        self.__parallel_write_mode = allow_parallel_write
 
     def get_contra_data(self) -> ContraData:
         return ContraData.load(self.contra_file)
@@ -285,7 +290,7 @@ class ParticleFilterFile(Struct):
                             snapshot_number = snap_part_datasets.attrs["SnapshotNumber"],
                             filepath = snap_part_datasets.attrs["SnapshotFile"],
                             allowed_ids = part_type_dataset["ParticleIDs"][:],
-                            mask = part_type_dataset["Mask"][:]
+                            mask = np.array(part_type_dataset["Mask"][:], dtype = np.bool_)
                         )
 
             if los_datasets is not None:
@@ -314,40 +319,64 @@ class ParticleFilterFile(Struct):
                                 line_of_sight_index = los_part_datasets.attrs["LineOfSightIndex"],
                                 filepath = los_file_group.attrs["LineOfSightFile"],
                                 allowed_ids = part_type_dataset["ParticleIDs"][:],
-                                mask = part_type_dataset["Mask"][:]
+                                mask = np.array(part_type_dataset["Mask"][:], dtype = np.bool_)
                             )
 
-    def save(self, filepath: str|None = None) -> None:
+    def save(self, filepath: str|None = None, use_mask_datatype = type|None) -> None:
         writing_for_first_time = False
         if not self.__writable and filepath is None:
             raise FileExistsError("Unable to save ParticleFilterFile object as a file already exists at the default filepath.\nRename or delete the existing file first, or specify a new filename.")
         elif filepath is not None:
-            if os.path.exists(filepath):
+            if os.path.exists(filepath) and not self.__parallel_write_mode:
                 raise FileExistsError(f"Unable to save ParticleFilterFile object as a file already exists at \"{filepath}\".\nRename or delete the existing file first, or specify a new filename.")
         else:
             writing_for_first_time = True
             filepath = self.filepath
 
-        with h5.File(filepath, "w") as file:
-            header = file.create_group("Header")
+        file: h5.File|None = None
+        if self.__parallel_write_mode:
+            file_open_start_time = time.time()
+            while time.time() - file_open_start_time < WAIT_SECONDS:
+                try:
+                    file = h5.File(filepath, "a")
+                    break
+                except (BlockingIOError, OSError):#TODO: figure out exactly which exception this is!
+                    file = None
+                    time.sleep(10)
+            if file is None:
+                Console.print_error(f"Unable to aquire write access to output file within the allotted time ({WAIT_SECONDS}s). Moving to next line-of-sight.")
+                raise IOError("Unable to access file to write data.")
+        else:
+            file = h5.File(filepath, "w")
+
+        with file:
+
+            # Check that the header group hasn't already been created - don't overwrite if already present!
+            write_header = True
+            try:
+                header = file.create_group("Header")
+            except:
+                write_header = False
+
             if self.has_snapshots:
                 snapshot_datasets = file.create_group("Snapshots")
             if self.has_lines_of_sight:
                 los_datasets = file.create_group("LinesOfSight")
 
-            header.attrs["Version"] =  str(self.version)
-            header.attrs["Date"] = datetime.datetime(year = self.date.year, month = self.date.month, day = self.date.day).timestamp()
-            header.attrs["Description"] = self.description
-            header.attrs["ContraFile"] = self.contra_file
-            header.attrs["SimulationType"] = self.simulation_type
-            if self.has_snapshots:
-                header.attrs["SnapshotsDirectory"] = self.snapshots_directory
-#                header.create_dataset("SnapshotRedshifts", data = np.array([str(v) for v in self.get_snapshot_redshifts()], dtype = object), dtype = h5.special_dtype(vlen = str))
-                header.create_dataset("SnapshotFiles", data = np.array([str(v) for v in self.get_snapshot_file_names()], dtype = object), dtype = h5.special_dtype(vlen = str))
-            if self.has_lines_of_sight:
-                header.attrs["LinesOfSightDirectory"] = self.line_of_sight_directory
-#                header.create_dataset("LineOfSightRedshifts", data = np.array([str(v) for v in self.get_line_of_sight_redshifts()], dtype = object), dtype = h5.special_dtype(vlen = str))
-                header.create_dataset("LineOfSightFiles", data = np.array([str(v) for v in self.get_line_of_sight_file_names()], dtype = object), dtype = h5.special_dtype(vlen = str))
+            if write_header:
+                header.attrs["Version"] =  str(self.version)
+                header.attrs["Date"] = datetime.datetime(year = self.date.year, month = self.date.month, day = self.date.day).timestamp()
+                header.attrs["Description"] = self.description
+                header.attrs["ContraFile"] = self.contra_file
+                header.attrs["SimulationType"] = self.simulation_type
+                if self.has_snapshots:
+                    header.attrs["SnapshotsDirectory"] = self.snapshots_directory
+    #                header.create_dataset("SnapshotRedshifts", data = np.array([str(v) for v in self.get_snapshot_redshifts()], dtype = object), dtype = h5.special_dtype(vlen = str))
+                    header.create_dataset("SnapshotFiles", data = np.array([str(v) for v in self.get_snapshot_file_names()], dtype = object), dtype = h5.special_dtype(vlen = str))
+                if self.has_lines_of_sight:
+                    header.attrs["LinesOfSightDirectory"] = self.line_of_sight_directory
+    #                header.create_dataset("LineOfSightRedshifts", data = np.array([str(v) for v in self.get_line_of_sight_redshifts()], dtype = object), dtype = h5.special_dtype(vlen = str))
+                    header.create_dataset("LineOfSightFiles", data = np.array([str(v) for v in self.get_line_of_sight_file_names()], dtype = object), dtype = h5.special_dtype(vlen = str))
 
             if self.has_snapshots:
 #                for z in self.get_snapshot_redshifts():
@@ -372,7 +401,7 @@ class ParticleFilterFile(Struct):
                         part_type_dataset.attrs["TotalNumberOfParticles"] = self.snapshot_filters[snap_file_name][part_type].mask.shape[0]
                         part_type_dataset.attrs["NumberOfParticles"] = self.snapshot_filters[snap_file_name][part_type].mask.sum()
                         part_type_dataset.create_dataset("ParticleIDs", data = self.snapshot_filters[snap_file_name][part_type].allowed_ids)
-                        part_type_dataset.create_dataset("Mask", data = self.snapshot_filters[snap_file_name][part_type].mask)
+                        part_type_dataset.create_dataset("Mask", data = self.snapshot_filters[snap_file_name][part_type].mask if use_mask_datatype is None else np.array(self.snapshot_filters[snap_file_name][part_type].mask, dtype = use_mask_datatype))
 
             if self.has_lines_of_sight:
 #                for z in self.get_line_of_sight_redshifts():
@@ -404,7 +433,7 @@ class ParticleFilterFile(Struct):
                             part_type_dataset.attrs["TotalNumberOfParticles"] = self.line_of_sight_filters[los_file_name][los_index][part_type].mask.shape[0]
                             part_type_dataset.attrs["NumberOfParticles"] = self.line_of_sight_filters[los_file_name][los_index][part_type].mask.sum()
                             part_type_dataset.create_dataset("ParticleIDs", data = self.line_of_sight_filters[los_file_name][los_index][part_type].allowed_ids)
-                            part_type_dataset.create_dataset("Mask", data = self.line_of_sight_filters[los_file_name][los_index][part_type].mask)
+                            part_type_dataset.create_dataset("Mask", data = self.line_of_sight_filters[los_file_name][los_index][part_type].mask if use_mask_datatype is None else np.array(self.line_of_sight_filters[los_file_name][los_index][part_type].mask, dtype = use_mask_datatype))
 
         if writing_for_first_time:
             # Mark the default filepath as being written to

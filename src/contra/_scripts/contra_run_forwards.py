@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2024-present Christopher Rowe <chris.rowe19@outlook.com>
 #
 # SPDX-License-Identifier: None
-from .. import VERSION, ParticleType, ArrayReorder, ArrayReorder_2, ArrayMapping, SharedArray, SharedArray_TransmissionData, SharedArray_Shepherd, SharedArray_ParallelJob
+from .. import VERSION, Stopwatch, ParticleType, ArrayReorder, ArrayReorder_2, ArrayMapping, SharedArray, SharedArray_TransmissionData, SharedArray_Shepherd, SharedArray_ParallelJob
 from .._L_star import get_L_star_halo_mass_of_z
 from ..io import SnapshotBase, SnapshotEAGLE, FileTreeScraper_EAGLE, SnapshotSWIFT, CatalogueBase, CatalogueSUBFIND, CatalogueSOAP#, OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, CheckpointData
 from ..io._Output_Objects__forwards import OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset
@@ -200,7 +200,9 @@ async def __main(
                 version = VersionInfomation.from_string(VERSION),
                 date = start_date,
                 simulation_type = "SWIFT" if is_SWIFT else "EAGLE",
+                simulation_directory = snapshot_directory,
                 N_searched_snapshots = N_snapshots,
+                uses_snipshots = is_EAGLE,
                 output_file = output_filepath,
                 has_gas = do_gas,
                 has_stars = do_stars,
@@ -251,12 +253,16 @@ async def __main(
                 last_completed_numerical_file_number = -1
                 print("failed - no data to restart from.")
 
+        stopwatch = Stopwatch("Search", show_time_since_lap = True)
+
         for catalogue_info in (simulation_file_scraper.snipshot_catalogues if is_EAGLE else simulation_file_scraper.catalogues):
 
             if restart and catalogue_info.number_numerical <= last_completed_numerical_file_number:
                 Console.print_info(f"{catalogue_info.number} already complete. Skipping." if not is_EAGLE else f"{catalogue_info.number} (redshift {catalogue_info.tag_redshift}) already complete. Skipping.")
                 continue
             Console.print_info(f"Doing {catalogue_info.number}" if not is_EAGLE else f"Doing {catalogue_info.number} (redshift {catalogue_info.tag_redshift})")
+
+            Console.print_verbose_info("    Loading Snapshot and catalogue objects.")
 
             catalogue = catalogue_info.load()
             snapshot = catalogue.snapshot
@@ -266,6 +272,9 @@ async def __main(
             if len(catalogue) == 0:
                 Console.print_info("    No halos. Skipping.")
                 continue
+            Console.print_info(f"    Catalogue has {len(catalogue)} haloes.")
+
+            Console.print_verbose_info("    Seaching for halo membership.")
 
             (
                 result_data_shepherd,
@@ -287,17 +296,23 @@ async def __main(
                 snapshot_last_halo_particle_positions
             )
 
+            Console.print_verbose_info("    Creating output struct.")
+
+            results = ParticleTypeDataset(
+                particle_type = particle_type,
+                target_redshift = catalogue.redshift,
+                file_number = catalogue_info.number,
+                redshifts = snapshot_last_halo_redshifts.data,
+                halo_ids = snapshot_last_halo_ids.data,
+                halo_masses = snapshot_last_halo_masses.data,
+                halo_masses_scaled = snapshot_last_halo_masses_scaled.data,
+                positions_pre_ejection = snapshot_last_halo_particle_positions.data
+            )
+
             with output_file:
-                results = ParticleTypeDataset(
-                    particle_type = particle_type,
-                    target_redshift = catalogue.redshift,
-                    file_number = catalogue_info.number,
-                    redshifts = snapshot_last_halo_redshifts.data,
-                    halo_ids = snapshot_last_halo_ids.data,
-                    halo_masses = snapshot_last_halo_masses.data,
-                    halo_masses_scaled = snapshot_last_halo_masses_scaled.data,
-                    positions_pre_ejection = snapshot_last_halo_particle_positions.data
-                )
+
+                Console.print_verbose_info("    Writing data.")
+
 #                try:
                 output_file.write_particle_type_dataset(results)
 #                except KeyError as e:
@@ -306,6 +321,8 @@ async def __main(
 #                        output_file.increase_number_of_snapshots(N_snapshots)
 #                    else:
 #                        raise e
+
+            stopwatch.lap()
 
         if result_data_shepherd is not None: # Check just in case no snapshots were itterated over!
             result_data_shepherd.free()
@@ -340,6 +357,8 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
             raise TypeError(f"Unexpected catalogue type {type(catalogue).__name__}. Expected {self.__catalogue_type.__name__}.")
         if not isinstance(catalogue.snapshot, self.__snapshot_type):
             raise TypeError(f"Unexpected snapshot type {type(catalogue.snapshot).__name__}. Expected {self.__snapshot_type.__name__}.")
+
+        Console.print_verbose_info("    Reading snapshot data.")
         
         snapshot = catalogue.snapshot
 
@@ -348,6 +367,8 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
         results_shepherd = SharedArray_Shepherd()
 
         snapshot_particle_ids = SharedArray.as_shared(snapshot.get_IDs(particle_type), name = "snap-particle-ids", shepherd = results_shepherd)
+
+        Console.print_verbose_info("    Allocating result array memory.")
 
         snapshot_particle_last_halo_ids = SharedArray.create(n_particles, np.int64, name = "snap-last-halo-ids", shepherd = results_shepherd)
         snapshot_particle_last_halo_masses = SharedArray.create(n_particles, np.float64, name = "snap-last-halo-masses", shepherd = results_shepherd)
@@ -358,6 +379,8 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
         if prior_particle_data_shepherd is None:
             # This is the first snapshot
 
+            Console.print_verbose_info("    No previous results. Filling result arrays with placeholder data.")
+
             snapshot_particle_last_halo_ids.fill(-1)
             snapshot_particle_last_halo_masses.fill(np.nan)
             snapshot_particle_last_halo_masses_scaled.fill(np.nan)
@@ -367,7 +390,11 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
         else:
             # Reorganise existing data
 
+            Console.print_verbose_info("    Calculating reorder for previous result data.")
+
             transition_to_new_order = ArrayReorder_2.create(prior_particle_ids.data, snapshot_particle_ids.data)
+
+            Console.print_verbose_info("    Reordering...", end = "")
 
             transition_to_new_order(prior_particle_last_halo_ids.data, output_array = snapshot_particle_last_halo_ids.data)
             transition_to_new_order(prior_particle_last_halo_masses.data, output_array = snapshot_particle_last_halo_masses.data)
@@ -375,9 +402,16 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
             transition_to_new_order(prior_particle_last_halo_redshifts.data, output_array = snapshot_particle_last_halo_redshifts.data)
             transition_to_new_order(prior_particle_last_halo_positions.data, output_array = snapshot_particle_last_halo_positions.data)
 
+            if Settings.verbose:
+                print("done", flush = True)
+
+            Console.print_verbose_info("    Releasing memory from previous results.")
+
             prior_particle_data_shepherd.free()
 
-        with SharedArray_Shepherd() as shared_memory: # Used to free all memory
+        with SharedArray_Shepherd() as shared_memory: # Used to free all memory used for data not returned
+
+            Console.print_verbose_info("    Reading catalogue data.")
 
             halo_ids = SharedArray.as_shared(catalogue.get_halo_IDs(particle_type), name = "halo-ids", shepherd = shared_memory)
             halo_masses = SharedArray.as_shared(catalogue.get_halo_masses(particle_type), name = "halo-masses", shepherd = shared_memory)
@@ -385,7 +419,9 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
 
             snapshot_positions = SharedArray.as_shared(snapshot.get_positions(particle_type), name = "particle-positions", shepherd = shared_memory)
 
-            snapshot_particle_update_mask = SharedArray.create(n_particles, np.bool_, name = "snap-particle-update-mask", shepherd = shared_memory)
+            snapshot_particle_update_mask = SharedArray.create(n_particles, np.bool_, name = "snap-particle-update-mask", shepherd = shared_memory).fill(False)
+
+            Console.print_verbose_info("    Distributing search tasks to workers.")
 
             SharedArray_ParallelJob(SnapshotSearcher.update_halo_particles, pool_size = 64, number_of_chunks = 64, ignore_return = True).execute(
                 range(halo_ids.data.shape[0]),
@@ -399,8 +435,14 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
                 particle_halo_ids
             )
 
+            Console.print_verbose_info("    Mapping snapshot result data.")
+
             snapshot_particle_last_halo_redshifts.data[snapshot_particle_update_mask.data] = snapshot.redshift
             snapshot_particle_last_halo_positions.data[snapshot_particle_update_mask.data, :] = snapshot_positions.data[snapshot_particle_update_mask.data, :]
+
+            Console.print_info(f"    Identified {snapshot_particle_update_mask.data.sum()} particles in haloes.")
+
+        Console.print_verbose_info("    Halo search step complete.")
 
         return results_shepherd, snapshot_particle_ids, snapshot_particle_last_halo_ids, snapshot_particle_last_halo_masses, snapshot_particle_last_halo_masses_scaled, snapshot_particle_last_halo_redshifts, snapshot_particle_last_halo_positions
 

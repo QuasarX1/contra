@@ -616,43 +616,6 @@ def check_catalogue_data(selected_snapshot_numbers: list[str]|None, catalogue_in
 
     parallel_indexed_filepaths: dict[int, str]
 
-    n_properties_files = None
-    n_membership_files = None
-    for filepath in catalogue_info.get_by_number(i).properties_filepaths:
-        try:
-            value = None
-            with h5.File(filepath) as file:
-                if "Header" not in file:
-                    raise RuntimeError()
-                if "NumFilesPerSnapshot" not in file["Header"].attrs:
-                    raise RuntimeError()
-                value = file["Header"].attrs["NumFilesPerSnapshot"]
-        except:
-            continue
-        if value is not None:
-            n_properties_files = value
-            break
-    if n_properties_files is None:
-        raise RuntimeError()
-    for filepath in catalogue_info.get_by_number(i).membership_filepaths:
-        try:
-            value = None
-            with h5.File(filepath) as file:
-                if "Header" not in file:
-                    raise RuntimeError()
-                if "NumFilesPerSnapshot" not in file["Header"].attrs:
-                    raise RuntimeError()
-                value = file["Header"].attrs["NumFilesPerSnapshot"]
-        except:
-            continue
-        if value is not None:
-            n_membership_files = value
-            break
-    if n_membership_files is None:
-        raise RuntimeError()
-    parallel_indexed_properties_filepaths = { int(f.split(".")[-2]) : f for f in catalogue_info.get_by_number(i).properties_filepaths }
-    parallel_indexed_membership_filepaths = { int(f.split(".")[-2]) : f for f in catalogue_info.get_by_number(i).membership_filepaths }
-
     if number_of_worker_processes > 1:
         Console.print_info(f"Running in parallel using {number_of_worker_processes} processes.")
 
@@ -663,16 +626,6 @@ def check_catalogue_data(selected_snapshot_numbers: list[str]|None, catalogue_in
         corrupted_catalogue_membership_file_indexes = manager.dict()
 
         pool = multiprocessing.Pool(number_of_worker_processes)
-
-        for i in ordered_snap_nums:
-#            n_properties_files = 
-#            n_membership_files = 
-#            parallel_indexed_properties_filepaths = { int(f.split(".")[-2]) : f for f in catalogue_info.get_by_number(i).properties_filepaths }
-#            parallel_indexed_membership_filepaths = { int(f.split(".")[-2]) : f for f in catalogue_info.get_by_number(i).membership_filepaths }
-            pool.apply(check_catalogue_data_inner, args = (i, parallel_indexed_properties_filepaths, parallel_indexed_membership_filepaths, n_properties_files, n_membership_files, properties_groups_to_check, properties_fields_to_check, membership_fields_to_check, membership_dark_matter_fields_to_check, missing_catalogue_properties_file_indexes, missing_catalogue_membership_file_indexes, corrupted_catalogue_properties_file_indexes, corrupted_catalogue_membership_file_indexes), kwds = { "snipshots": snipshots })
-
-        pool.join()
-
     else:
         Console.print_info("Running in serial.")
 
@@ -680,8 +633,82 @@ def check_catalogue_data(selected_snapshot_numbers: list[str]|None, catalogue_in
         missing_catalogue_membership_file_indexes = {}
         corrupted_catalogue_properties_file_indexes = {}
         corrupted_catalogue_membership_file_indexes = {}
-        for i in ordered_snap_nums:
+
+    for i in ordered_snap_nums:
+
+        n_properties_files = None
+        n_membership_files = None
+        for filepath in catalogue_info.get_by_number(i).properties_filepaths:
+            try:
+                value = None
+                with h5.File(filepath) as file:
+                    if "Header" not in file:
+                        raise RuntimeError()
+                    if "NumFilesPerSnapshot" not in file["Header"].attrs:
+                        raise RuntimeError()
+                    value = file["Header"].attrs["NumFilesPerSnapshot"]
+            except:
+                continue
+            if value is not None:
+                n_properties_files = value
+                break
+        if n_properties_files is None:
+            raise RuntimeError()
+        for filepath in catalogue_info.get_by_number(i).membership_filepaths:
+            try:
+                value = None
+                with h5.File(filepath) as file:
+                    if "Header" not in file:
+                        raise RuntimeError()
+                    if "NumFilesPerSnapshot" not in file["Header"].attrs:
+                        raise RuntimeError()
+                    value = file["Header"].attrs["NumFilesPerSnapshot"]
+            except:
+                continue
+            if value is not None:
+                n_membership_files = value
+                break
+        if n_membership_files is None:
+            raise RuntimeError()
+        parallel_indexed_properties_filepaths = { int(f.split(".")[-2]) : f for f in catalogue_info.get_by_number(i).properties_filepaths }
+        parallel_indexed_membership_filepaths = { int(f.split(".")[-2]) : f for f in catalogue_info.get_by_number(i).membership_filepaths }
+
+        if number_of_worker_processes > 1:
+            pool.apply(check_catalogue_data_inner, args = (i, parallel_indexed_properties_filepaths, parallel_indexed_membership_filepaths, n_properties_files, n_membership_files, properties_groups_to_check, properties_fields_to_check, membership_fields_to_check, membership_dark_matter_fields_to_check, missing_catalogue_properties_file_indexes, missing_catalogue_membership_file_indexes, corrupted_catalogue_properties_file_indexes, corrupted_catalogue_membership_file_indexes), kwds = { "snipshots": snipshots })
+        else:
             check_catalogue_data_inner(i, parallel_indexed_properties_filepaths, parallel_indexed_membership_filepaths, n_properties_files, n_membership_files, properties_groups_to_check, properties_fields_to_check, membership_fields_to_check, membership_dark_matter_fields_to_check, missing_catalogue_properties_file_indexes, missing_catalogue_membership_file_indexes, corrupted_catalogue_properties_file_indexes, corrupted_catalogue_membership_file_indexes, snipshots = snipshots)
+    if number_of_worker_processes > 1:
+        pool.join()
+
+#    if number_of_worker_processes > 1:
+#        Console.print_info(f"Running in parallel using {number_of_worker_processes} processes.")
+#
+#        manager = multiprocessing.Manager()
+#        missing_catalogue_properties_file_indexes = manager.dict()
+#        missing_catalogue_membership_file_indexes = manager.dict()
+#        corrupted_catalogue_properties_file_indexes = manager.dict()
+#        corrupted_catalogue_membership_file_indexes = manager.dict()
+#
+#        pool = multiprocessing.Pool(number_of_worker_processes)
+#
+#        for i in ordered_snap_nums:
+##            n_properties_files = 
+##            n_membership_files = 
+##            parallel_indexed_properties_filepaths = { int(f.split(".")[-2]) : f for f in catalogue_info.get_by_number(i).properties_filepaths }
+##            parallel_indexed_membership_filepaths = { int(f.split(".")[-2]) : f for f in catalogue_info.get_by_number(i).membership_filepaths }
+#            pool.apply(check_catalogue_data_inner, args = (i, parallel_indexed_properties_filepaths, parallel_indexed_membership_filepaths, n_properties_files, n_membership_files, properties_groups_to_check, properties_fields_to_check, membership_fields_to_check, membership_dark_matter_fields_to_check, missing_catalogue_properties_file_indexes, missing_catalogue_membership_file_indexes, corrupted_catalogue_properties_file_indexes, corrupted_catalogue_membership_file_indexes), kwds = { "snipshots": snipshots })
+#
+#        pool.join()
+#
+#    else:
+#        Console.print_info("Running in serial.")
+#
+#        missing_catalogue_properties_file_indexes = {}
+#        missing_catalogue_membership_file_indexes = {}
+#        corrupted_catalogue_properties_file_indexes = {}
+#        corrupted_catalogue_membership_file_indexes = {}
+#        for i in ordered_snap_nums:
+#            check_catalogue_data_inner(i, parallel_indexed_properties_filepaths, parallel_indexed_membership_filepaths, n_properties_files, n_membership_files, properties_groups_to_check, properties_fields_to_check, membership_fields_to_check, membership_dark_matter_fields_to_check, missing_catalogue_properties_file_indexes, missing_catalogue_membership_file_indexes, corrupted_catalogue_properties_file_indexes, corrupted_catalogue_membership_file_indexes, snipshots = snipshots)
 
     return (
         tuple([
