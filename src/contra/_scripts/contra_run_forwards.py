@@ -15,6 +15,7 @@ import asyncio
 import numpy as np
 from unyt import unyt_quantity, unyt_array
 from QuasarCode import Settings, Console
+from QuasarCode.MPI import MPI_Config, synchronyse
 from QuasarCode.Data import VersionInfomation
 from QuasarCode.Tools import ScriptWrapper
 
@@ -130,35 +131,47 @@ async def __main(
     # Store the current date at the start in case the file writing occours after midnight.
     start_date = datetime.date.today()
 
+    # Identify if MPI is avalible and if more than one rank is avalible
+    use_MPI: bool = Settings.mpi_avalible and MPI_Config.comm_size > 1
+    if not use_MPI or MPI_Config.is_root:
+        Console.print_info(f"Running with MPI on {MPI_Config.comm_size} ranks.")
+        Console.print_debug(f"Root MPI rank is {MPI_Config.root}.")
+
+    # Validate sim type
     if not (is_EAGLE or is_SWIFT):
-        Console.print_error("Must specify either EAGLE or SWIFT simulation type.")
+        if not use_MPI or MPI_Config.is_root:
+            Console.print_error("Must specify either EAGLE or SWIFT simulation type.")
         return
     else:
-        if is_EAGLE:
-            Console.print_verbose_info("Snapshot type: EAGLE")
-        elif is_SWIFT:
-            Console.print_verbose_info("Snapshot type: SWIFT")
+        if not use_MPI or MPI_Config.is_root:
+            if is_EAGLE:
+                Console.print_verbose_info("Snapshot type: EAGLE")
+            elif is_SWIFT:
+                Console.print_verbose_info("Snapshot type: SWIFT")
 
-    Console.print_verbose_info("Particle Types:")
+    # Validate particle types
+    #     If none are specified, use all types
+    if not use_MPI or MPI_Config.is_root:
+        Console.print_verbose_info("Particle Types:")
+        if not (do_gas or do_stars or do_black_holes or do_dark_matter):
+            Console.print_verbose_warning("    No particle type(s) specified. Enabling all particle types.")
+            do_gas = do_stars = do_black_holes = do_dark_matter = True
+        particle_types: list[ParticleType] = []
+        if do_gas:
+            particle_types.append(ParticleType.gas)
+            Console.print_verbose_info("    Tracking gas particles")
+        if do_stars:
+            particle_types.append(ParticleType.star)
+            Console.print_verbose_info("    Tracking star particles")
+        if do_black_holes:
+            particle_types.append(ParticleType.black_hole)
+            Console.print_verbose_info("    Tracking black hole particles")
+        if do_dark_matter:
+            particle_types.append(ParticleType.dark_matter)
+            Console.print_verbose_info("    Tracking dark matter particles")
 
-    if not (do_gas or do_stars or do_black_holes or do_dark_matter):
-        Console.print_verbose_warning("    No particle type(s) specified. Enabling all particle types.")
-        do_gas = do_stars = do_black_holes = do_dark_matter = True
-    particle_types: list[ParticleType] = []
-    if do_gas:
-        particle_types.append(ParticleType.gas)
-        Console.print_verbose_info("    Tracking gas particles")
-    if do_stars:
-        particle_types.append(ParticleType.star)
-        Console.print_verbose_info("    Tracking star particles")
-    if do_black_holes:
-        particle_types.append(ParticleType.black_hole)
-        Console.print_verbose_info("    Tracking black hole particles")
-    if do_dark_matter:
-        particle_types.append(ParticleType.dark_matter)
-        Console.print_verbose_info("    Tracking dark matter particles")
-
-    Console.print_info("Identifying snapshot and catalogue files")
+    if not use_MPI or MPI_Config.is_root:
+        Console.print_info("Identifying snapshot and catalogue files")
 
     # Ensure that the path is an absolute path
     snapshot_directory = os.path.abspath(snapshot_directory)
@@ -170,56 +183,77 @@ async def __main(
     # Ensure that the path is an absolute path
     output_filepath = os.path.abspath(output_filepath)
 
-    if os.path.exists(output_filepath):
-        if not (allow_overwrite or restart):
-            Console.print_error("Output file already exists. Either remove it first or explicitley enable overwrite.")
+    # Validate the output file and exit all ranks if in an unacceptable state
+    able_to_procede: bool
+    if not use_MPI or MPI_Config.is_root:
+        able_to_procede = True
+        if os.path.exists(output_filepath):
+            if not (allow_overwrite or restart):
+                able_to_procede = False
+                synchronyse("able_to_procede")
+                Console.print_error("Output file already exists. Either remove it first or explicitley enable overwrite.")
+                return
+            elif allow_overwrite:
+                if not use_MPI or MPI_Config.is_root:
+                    Console.print_warning("Pre-existing output file will be overwritten")
+        elif False:#TODO: check for valid file location (to prevent an error at the last minute!)
+            pass
+        synchronyse("able_to_procede")
+    else:
+        synchronyse("able_to_procede")
+        if not able_to_procede:
             return
-        elif allow_overwrite:
-            Console.print_warning("Pre-existing output file will be overwritten")
-    elif False:#TODO: check for valid file location (to prevent an error at the last minute!)
-        pass
 
     # Create output file
-    output_file = OutputWriter(output_filepath, overwrite = not restart)
+    if not use_MPI or MPI_Config.is_root:
+        output_file = OutputWriter(output_filepath, overwrite = not restart)
 
+    # Define variables used to pass data between searches
     snapshot: SnapshotBase
     catalogue: CatalogueBase
     result_data_shepherd: SharedArray_Shepherd|None = None
-    shapshot_particle_ids: SharedArray|None = None
-    snapshot_last_halo_ids: SharedArray|None = None
-    snapshot_last_halo_masses: SharedArray|None = None
-    snapshot_last_halo_masses_scaled: SharedArray|None = None
-    snapshot_last_halo_redshifts: SharedArray|None = None
-    snapshot_last_halo_particle_positions: SharedArray|None = None
+    shapshot_particle_ids:                  SharedArray|None = None
+    snapshot_last_halo_ids:                 SharedArray|None = None
+    snapshot_last_halo_masses:              SharedArray|None = None
+    snapshot_last_halo_masses_scaled:       SharedArray|None = None
+    snapshot_last_halo_redshifts:           SharedArray|None = None
+    snapshot_last_halo_particle_positions:  SharedArray|None = None
 
-    if not restart:
-        Console.print_info("Creating file...", end = "")
+    # Create the output file and header (if not restarting)
+    if not use_MPI or MPI_Config.is_root:
+        if not restart:
+            Console.print_info("Creating file...", end = "")
 
-        with output_file:
-            output_file.write_header(HeaderDataset(
-                version = VersionInfomation.from_string(VERSION),
-                date = start_date,
-                simulation_type = "SWIFT" if is_SWIFT else "EAGLE",
-                simulation_directory = snapshot_directory,
-                N_searched_snapshots = N_snapshots,
-                uses_snipshots = is_EAGLE,
-                output_file = output_filepath,
-                has_gas = do_gas,
-                has_stars = do_stars,
-                has_black_holes = do_black_holes,
-                has_dark_matter = do_dark_matter,
-                has_statistics = False
-            ))
+            with output_file:
+                output_file.write_header(HeaderDataset(
+                    version = VersionInfomation.from_string(VERSION),
+                    date = start_date,
+                    simulation_type = "SWIFT" if is_SWIFT else "EAGLE",
+                    simulation_directory = snapshot_directory,
+                    N_searched_snapshots = N_snapshots,
+                    uses_snipshots = is_EAGLE,
+                    output_file = output_filepath,
+                    has_gas = do_gas,
+                    has_stars = do_stars,
+                    has_black_holes = do_black_holes,
+                    has_dark_matter = do_dark_matter,
+                    has_statistics = False
+                ))
 
-        print("done")
+            print("done")
 
-    searcher = SnapshotSearcher(SnapshotEAGLE, CatalogueSUBFIND, lambda _: 1.0) if is_EAGLE else SnapshotSearcher(SnapshotSWIFT, CatalogueSOAP, lambda _: 1.0)
+    # Initialise the search dispatcher object
+    # This allows the search to be parallelised on the current rank over haloes with one halo per subprocess
+    searcher = SnapshotSearcher(64, SnapshotEAGLE, CatalogueSUBFIND, lambda _: 1.0) if is_EAGLE else SnapshotSearcher(64, SnapshotSWIFT, CatalogueSOAP, lambda _: 1.0)
 
+    # Itterate over selected particle types
     for particle_type in particle_types:
 
-        Console.print_info(f"Running search for {particle_type.name} particles.")
+        if not use_MPI or MPI_Config.is_root:
+            Console.print_info(f"Running search for {particle_type.name} particles.")
 
         if restart:
+            # Load data for current state
 
             last_completed_numerical_file_number: int
 
@@ -333,8 +367,9 @@ T_snapshot = TypeVar("T_snapshot", bound = SnapshotBase)
 T_catalogue = TypeVar("T_catalogue", bound = CatalogueBase)
 class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
 
-    def __init__(self, snapshot_type: type[T_snapshot], catalogue_type: type[T_catalogue], mass_of_L_star_at_z: Callable[[float], float]):
+    def __init__(self, number_of_workers: int, snapshot_type: type[T_snapshot], catalogue_type: type[T_catalogue], mass_of_L_star_at_z: Callable[[float], float]):
 
+        self.__number_of_workers = number_of_workers
         self.__snapshot_type = snapshot_type
         self.__catalogue_type = catalogue_type
 
@@ -423,7 +458,7 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
 
             Console.print_verbose_info("    Distributing search tasks to workers.")
 
-            SharedArray_ParallelJob(SnapshotSearcher.update_halo_particles, pool_size = 64, number_of_chunks = 64, ignore_return = True).execute(
+            SharedArray_ParallelJob(SnapshotSearcher.update_halo_particles, pool_size = self.__number_of_workers, number_of_chunks = self.__number_of_workers, ignore_return = True).execute(
                 range(halo_ids.data.shape[0]),
                 snapshot_particle_update_mask,
                 snapshot_particle_last_halo_ids,

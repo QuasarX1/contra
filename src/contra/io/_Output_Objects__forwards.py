@@ -10,9 +10,10 @@ from functools import singledispatchmethod
 import numpy as np
 import h5py as h5
 from unyt import unyt_quantity
-from QuasarCode import Console
+from QuasarCode import Console, Settings
 from QuasarCode.Data import VersionInfomation
 from QuasarCode.Tools import Struct, TypedAutoProperty, NullableTypedAutoProperty, TypeShield, NestedTypeShield
+from QuasarCode.MPI import MPI_Config
 
 from .._ArrayReorder import ArrayReorder
 from .._ParticleType import ParticleType
@@ -758,6 +759,8 @@ class OutputReader(object):
         self.__filepath = filepath
         self.__file: h5.File|None = None
 
+        self.__parallel_read: bool = Settings.mpi_avalible and MPI_Config.comm_size > 1
+
     @property
     def is_open(self):
         return self.__file is not None
@@ -795,7 +798,7 @@ class OutputReader(object):
         s.has_dark_matter = bool(self.__file["Header"].attrs["HasDarkMatter"])
         s.has_statistics = bool(self.__file["Header"].attrs["HasStatistics"])
         return s
-    
+
     def read_checkpoint(self, part_type: ParticleType) -> ParticleTypeDataset|None:
         if part_type.common_hdf5_name not in self.__file:
             return None
@@ -812,6 +815,18 @@ class OutputReader(object):
             raise KeyError(f"Contra output file has no dataset \"{part_type.common_hdf5_name}\".")
         return tuple(self.__file[part_type.common_hdf5_name].keys())
 
+    def __calculate_particle_chunk(self, n_elements: int) -> tuple[int, int]:
+        if not self.__parallel_read:
+            Console.print_verbose_warning("Parallel data access not enabled. Please report this!")
+            return 0, n_elements
+        base_chunk_size = n_elements // MPI_Config.comm_size
+        chunks_with_one_extra = n_elements % MPI_Config.comm_size
+        chunk_sizes = np.full(MPI_Config.comm_size, base_chunk_size, dtype = int)
+        chunk_sizes[:chunks_with_one_extra] += 1
+        snaphot_data_offset: int = chunk_sizes[:max(0, MPI_Config.comm_size - 1)].sum()
+        snaphot_data_chunk_size: int = chunk_sizes[MPI_Config.comm_size]
+        return snaphot_data_offset, snaphot_data_chunk_size
+
     def read_particle_type_dataset(self, part_type: ParticleType, number: str) -> ParticleTypeDataset:
         if not self.is_open:
             raise IOError("File not open. Call open() first or use with statement.")
@@ -820,15 +835,23 @@ class OutputReader(object):
         if number not in self.__file[part_type.common_hdf5_name]:
             raise KeyError(f"Contra output file has no {part_type.name} particle dataset for file number {number}.")
         d = self.__file[part_type.common_hdf5_name][number]
+
+        if self.__parallel_read:
+            offset, size = self.__calculate_particle_chunk(d.shape[0])
+            endpoint = offset + size
+        else:
+            offset = 0
+            endpoint = size = d.shape[0]
+
         s = ParticleTypeDataset()
         s.particle_type = part_type
         s.target_redshift = d.attrs["Redshift"]
         s.file_number = number
-        s.redshifts = d["HaloRedshift"][:]
-        s.halo_ids = d["HaloID"][:]
-        s.halo_masses = d["HaloMass"][:]
-        s.halo_masses_scaled = d["RelitiveHaloMass"][:]
-        s.positions_pre_ejection = d["PositionPreEjection"][:]
+        s.redshifts = d["HaloRedshift"][offset:endpoint]
+        s.halo_ids = d["HaloID"][offset:endpoint]
+        s.halo_masses = d["HaloMass"][offset:endpoint]
+        s.halo_masses_scaled = d["RelitiveHaloMass"][offset:endpoint]
+        s.positions_pre_ejection = d["PositionPreEjection"][offset:endpoint]
         return s
 
     def read_snapshot_stats_dataset(self, index: int) -> SnapshotStatsDataset:

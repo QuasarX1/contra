@@ -11,6 +11,7 @@ from unyt import unyt_array, unyt_quantity
 from h5py import File as HDF5_File
 from pyread_eagle import EagleSnapshot
 from QuasarCode import Settings, Console
+from QuasarCode.MPI import MPI_Config
 
 from .._ParticleType import ParticleType
 from ._SnapshotBase import SnapshotBase
@@ -79,6 +80,11 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
         self.__file_object = SnapshotEAGLE.make_reader_object(filepath)
         Console.print_debug("Calling pyread_eagle object's select_region method:")
         self.__file_object.select_region(0.0, self.__box_size_internal_units, 0.0, self.__box_size_internal_units, 0.0, self.__box_size_internal_units)
+
+        # If MPI is in use, select only a portion of the particles
+        #TODO: DOES THIS BREAK THE HALO READER!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        if Settings.mpi_avalible and MPI_Config.comm_size > 1:
+            self.__file_object.split_selection(MPI_Config.rank, MPI_Config.comm_size)
 
         super().__init__(
             filepath = filepath,
