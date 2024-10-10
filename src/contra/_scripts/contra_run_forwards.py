@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2024-present Christopher Rowe <chris.rowe19@outlook.com>
 #
 # SPDX-License-Identifier: None
-from .. import VERSION, Stopwatch, ParticleType, ArrayReorder, ArrayReorder_2, ArrayMapping, SharedArray, SharedArray_TransmissionData, SharedArray_Shepherd, SharedArray_ParallelJob
+from .. import VERSION, Stopwatch, ParticleType, ArrayReorder, ArrayReorder_2, ArrayReorder_MPI, ArrayMapping, SharedArray, SharedArray_TransmissionData, SharedArray_Shepherd, SharedArray_ParallelJob
 from .._L_star import get_L_star_halo_mass_of_z
 from ..io import SnapshotBase, SnapshotEAGLE, FileTreeScraper_EAGLE, SnapshotSWIFT, CatalogueBase, CatalogueSUBFIND, CatalogueSOAP#, OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, CheckpointData
 from ..io._Output_Objects__forwards import OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset
@@ -427,7 +427,7 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
 
             Console.print_verbose_info("    Calculating reorder for previous result data.")
 
-            transition_to_new_order = ArrayReorder_2.create(prior_particle_ids.data, snapshot_particle_ids.data)
+            transition_to_new_order = ArrayReorder_MPI.create(prior_particle_ids.data, snapshot_particle_ids.data)
 
             Console.print_verbose_info("    Reordering...", end = "")
 
