@@ -39,6 +39,7 @@ class SnapshotBase(SimulationDataBase[T_ISimulation]):
         self.__box_size: unyt_array = box_size
 
         self.__n_parts: Dict[ParticleType, int] = self._get_number_of_particles()
+        self.__n_parts_this_rank: Dict[ParticleType, int] = self._get_number_of_particles_this_rank()
 
     @property
     def filepath(self) -> str:
@@ -114,9 +115,16 @@ class SnapshotBase(SimulationDataBase[T_ISimulation]):
         """
         Called by constructor.
         """
+    @abstractmethod
+    def _get_number_of_particles_this_rank(self) -> Dict[ParticleType, int]:
+        """
+        Called by constructor.
+        """
         raise NotImplementedError("Attempted to call an abstract method.")
     def number_of_particles(self, particle_type: ParticleType) -> int:
         return self.__n_parts[particle_type]
+    def number_of_particles_this_rank(self, particle_type: ParticleType) -> int:
+        return self.__n_parts_this_rank[particle_type]
 
     @abstractmethod
     def get_IDs(self, particle_type: ParticleType) -> np.ndarray:

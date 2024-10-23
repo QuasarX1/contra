@@ -12,5 +12,6 @@ from ._EAGLE import SimulationSnapshotFiles_EAGLE, SimulationSnipshotFiles_EAGLE
 from ._LineOfSightBase import LineOfSightBase, LineOfSightFileBase
 from ._LineOfSightEAGLE import LineOfSightEAGLE, LineOfSightFileEAGLE
 from ._LineOfSightSWIFT import LineOfSightSWIFT, LineOfSightFileSWIFT
-from ._Output_Objects import OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, ContraData, CheckpointData
+#from ._Output_Objects__backwards import OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, ContraData, CheckpointData
+from ._Output_Objects import OutputWriter, OutputReader, DistributedOutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, ContraData
 from ._ParticleFilter import ParticleFilterFile, SnapshotParticleFilter, LineOfSightParticleFilter

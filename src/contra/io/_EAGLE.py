@@ -116,7 +116,7 @@ class SimulationSnapOrSnipFiles_EAGLE(SimulationFileTreeBase[SnapshotEAGLE], Gen
 
     def get_by_number(self, number: str) -> T:
         if number not in self.__file_lookup_by_number:
-            raise KeyError(f"{self.__file_type_string.title()} number \"{number}\" not avalible.")
+            raise KeyError(f"{self.__file_type_string.title()} number \"{number}\" not avalible (make sure the input datatype is a string).")
         return self.__file_lookup_by_number[number]
 
     def get_by_tag(self, tag: str) -> T:

@@ -18,7 +18,7 @@ from QuasarCode.Tools import Struct, AutoProperty, TypedAutoProperty, NullableTy
 
 from .. import VERSION
 from .._ParticleType import ParticleType
-from ._Output_Objects import ContraData
+from ._Output_Objects__backwards import ContraData
 
 WAIT_SECONDS = 10*60 # 10 minutes
 

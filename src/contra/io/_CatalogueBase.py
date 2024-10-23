@@ -120,7 +120,7 @@ class CatalogueBase(SimulationDataBase[T_ISimulation]):
         raise NotImplementedError("Attempted to call an abstract method.")
     
     @abstractmethod
-    def get_halo_IDs_by_snapshot_particle(self, particle_type: ParticleType, include_unbound: bool = True) -> np.ndarray:
+    def get_halo_IDs_by_snapshot_particle(self, particle_type: ParticleType, include_unbound: bool = True, snapshot_particle_ids: np.ndarray|None = None) -> np.ndarray:
         """
         Get list of halo IDs - one for each particle in the snapshot.
         Particles with no associated halo recive an ID of -1.

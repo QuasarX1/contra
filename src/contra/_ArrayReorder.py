@@ -7,7 +7,9 @@ from functools import singledispatchmethod
 import numpy as np
 from unyt import unyt_quantity, unyt_array
 from QuasarCode import Console
-from QuasarCode.MPI import MPI_Config
+from QuasarCode.MPI import MPI_Config, mpi_barrier
+
+#import traceback#TODO: remove
 
 
 
@@ -105,38 +107,31 @@ class ArrayReorder_MPI(object):
 
         if output_array is None:
             output_array = np.empty(shape = (self.__output_length, *source_data.shape[1:]), dtype = source_data.dtype)
-            Console.print_debug("initialised output", output_array)
+            Console.print_debug(MPI_Config.comm.gather([output_array.shape, output_array.dtype]))
 
         if default_value is not None:
             output_array[~self.__target_mask] = default_value
 
         # Find the order in which to communicate with other ranks
-        Console.print_debug(MPI_Config.comm_size, MPI_Config.rank)
-        Console.print_debug(MPI_Config.comm_size, MPI_Config.rank)
         communication_ranks_order = round_robin_pairings_self(MPI_Config.comm_size, MPI_Config.rank)
-        Console.print_debug(communication_ranks_order)
-        Console.print_debug(round_robin_pairings(MPI_Config.comm_size))
-
-        Console.print_debug("source", source_data)
 
         def do_self_transfer():
-            Console.print_debug(self.__send_rank_elements)
-            Console.print_debug("self data sent", source_data[self.__send_rank_elements == MPI_Config.rank])
             output_array[self.__recive_rank_elements == MPI_Config.rank] = source_data[self.__send_rank_elements == MPI_Config.rank]
 
         self_transfer_done = False
         for target_rank in communication_ranks_order:
-            Console.print_debug(target_rank)
             if target_rank is None:
                 # Do self transfer here to save time
+                MPI_Config.comm.barrier()
                 do_self_transfer()
                 self_transfer_done = True
             else:
                 # Send data expected by the target rank
                 # Recive data sent by that rank
                 send_mask = self.__send_rank_elements == target_rank
-                data_to_send = np.empty(send_mask.sum(), dtype = source_data.dtype)
+                data_to_send = np.empty((send_mask.sum(), *source_data.shape[1:]), dtype = source_data.dtype)
                 data_to_send[:] = source_data[send_mask]
+                MPI_Config.comm.barrier()
                 output_array[self.__recive_rank_elements == target_rank] = MPI_Config.comm.sendrecv(
                     sendobj = data_to_send,
                     dest = target_rank
@@ -147,9 +142,7 @@ class ArrayReorder_MPI(object):
             do_self_transfer()
         
         # Fix the order of the data that has been disordered due to information loss when passing multiple elements in a single rank pairing
-        Console.print_debug("before", output_array)
         output_array = self.__reorder_transmitted_data(output_array) # This should have the same input and output length
-        Console.print_debug("after", output_array)
 
         MPI_Config.comm.barrier()
         return output_array
@@ -194,6 +187,10 @@ class ArrayReorder_MPI(object):
             to be considered for matching without altering the input or output shapes.
         """
 
+        order_dtype = source_order.dtype
+        if order_dtype != target_order.dtype:
+            raise TypeError(f"Input source and target order arrays have different datatypes ({source_order.dtype} and {target_order.dtype}).\nThese input arrays MUST declare matching datatypes.")
+
         # Generate the filters if not specified
         if source_order_filter is None:
             source_order_filter = np.full(source_order.shape[0], True, dtype = np.bool_)
@@ -201,11 +198,11 @@ class ArrayReorder_MPI(object):
             target_order_filter = np.full(target_order.shape[0], True, dtype = np.bool_)
 
         # Allocate buffers for transmission of filtered data chunks
-        filtered_source_length_buffer = np.empty(source_order_filter.sum())
-        filtered_target_length_buffer = np.empty(target_order_filter.sum())
+        filtered_source_length_buffer = np.empty(source_order_filter.sum(), dtype = order_dtype)
+        filtered_target_length_buffer = np.empty(target_order_filter.sum(), dtype = order_dtype)
 
         # Gather information about other ranks (input data) after filtering
-        filtered_source_length_buffer[:] = source_order[source_order_filter]
+        filtered_source_length_buffer[:] = source_order[source_order_filter] # data transmitted with MPI should be contigous in memory
         all_source_ids_chunks: list[np.ndarray]|None = MPI_Config.comm.gather(filtered_source_length_buffer, MPI_Config.root)
         if MPI_Config.is_root:
 
@@ -213,6 +210,8 @@ class ArrayReorder_MPI(object):
             all_source_ids_chunks = cast(list[np.ndarray], all_source_ids_chunks)
             input_rank_chunk_sizes = [len(a) for a in all_source_ids_chunks]
             all_source_ids = np.concatenate(all_source_ids_chunks)
+#            Console.print_debug(*(line.strip() + "\n" for line in traceback.format_stack()))
+            Console.print_debug(all_source_ids.shape, all_source_ids.dtype, np.unique(all_source_ids).shape)
             del all_source_ids_chunks # Remove unnessessary copy (or reference if the combined array is a view)
 
             # Create an array with the rank associated with each element
@@ -251,33 +250,45 @@ class ArrayReorder_MPI(object):
         MPI_Config.comm.barrier()
 
         # Which elements of source data should be sent to which rank (assuming input convention - swap for reverse convention)
-        send_to_ranks_this_rank = np.full_like(source_order, -1, dtype = int)
+        send_to_ranks_this_rank = np.full_like(source_order, -1, dtype = order_dtype)
         # Which elements of output data are coming from which rank
-        get_from_ranks_this_rank = np.full_like(target_order, -1, dtype = int)
+        get_from_ranks_this_rank = np.full_like(target_order, -1, dtype = order_dtype)
         # Order of (unfiltered) data after MPI communication but before correction applied for disordered data (input convention)
-        unsorted_transmission_result_forwards = np.full_like(target_order, -1, dtype = int)
+        unsorted_transmission_result_forwards = np.full_like(target_order, -1, dtype = order_dtype)
         # Order of (unfiltered) data after MPI communication but before correction applied for disordered data (reverse of input convention)
-        unsorted_transmission_result_backwards = np.full_like(target_order, -1, dtype = int)
+        unsorted_transmission_result_backwards = np.full_like(source_order, -1, dtype = order_dtype)
 
         # Compute the re-order on the root rank only
         if MPI_Config.is_root:
             # Find the indeces that will produce a sorted array of elements appearing on both (filtered) arrays
+            Console.print_debug(all_source_ids.shape, np.unique(all_source_ids).shape)
+            Console.print_debug(all_target_ids.shape, np.unique(all_target_ids).shape)
             _, input_common_indices, output_common_indices = np.intersect1d(all_source_ids, all_target_ids, assume_unique = True, return_indices = True)
+            undo_sort_input_common_indices = input_common_indices.argsort()
+            undo_sort_output_common_indices = output_common_indices.argsort()
 
             # Compute the orders to swap between one filterd array and the other
-            forwards_order = input_common_indices[output_common_indices.argsort()]
-            backwards_order = output_common_indices[input_common_indices.argsort()]
+            forwards_order = input_common_indices[undo_sort_output_common_indices]
+            backwards_order = output_common_indices[undo_sort_input_common_indices]
 
             # Apply the re-ordering to the rank information
             # This will indicate which output data elements come from a given rank
             # WARNING: these are not strictly in the right order - elements coming from a given rank will be in source order and will need re-ordering!
 
-            target_order_source_ranks = all_source_id_ranks[forwards_order] # Which rank is a given data element coming from
-            source_order_target_ranks = all_target_id_ranks[backwards_order] # Which rank is a given data element going to
+            # Fill the arrays with -1 to account for data that is included by the masks but is only present in one of the datasets (and therfore not transfered)
+            target_order_source_ranks = np.full_like(all_target_ids, -1, dtype = order_dtype)
+            source_order_target_ranks = np.full_like(all_source_ids, -1, dtype = order_dtype)
+
+            #TODO: where these are -1, fill with default data!!!!!!!!!!!
+            Console.print_debug(all_source_ids.shape, all_source_ids.min() if all_source_ids.shape[0] > 0 else None, all_source_ids.max() if all_source_ids.shape[0] > 0 else None)
+            Console.print_debug(input_common_indices.shape, input_common_indices.min() if input_common_indices.shape[0] > 0 else None, input_common_indices.max() if input_common_indices.shape[0] > 0 else None)
+            Console.print_debug(forwards_order.shape, forwards_order.min() if forwards_order.shape[0] > 0 else None, forwards_order.max() if forwards_order.shape[0] > 0 else None)
+            target_order_source_ranks[output_common_indices[undo_sort_output_common_indices]] = all_source_id_ranks[forwards_order] # Which rank is a given data element coming from
+            source_order_target_ranks[input_common_indices[undo_sort_input_common_indices]] = all_target_id_ranks[backwards_order] # Which rank is a given data element going to
 
             # Simulate the MPI transmission opperation to reproduce the 'wrong' ordered data after transmission
-            result_order_without_fix_forwards = np.empty_like(all_target_ids)
-            result_order_without_fix_backwards = np.empty_like(all_target_ids)
+            result_order_without_fix_forwards = np.full_like(all_target_ids, -1, dtype = order_dtype)
+            result_order_without_fix_backwards = np.full_like(all_source_ids, -1, dtype = order_dtype)
             for target_rank in range(MPI_Config.comm_size):
                 for source_rank in range(MPI_Config.comm_size):
 

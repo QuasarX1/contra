@@ -35,6 +35,7 @@ dependencies = [
   "pykdtree",
   "QuasarCode",
   "mpi4py",
+  "tol_colors",
 ]
 
 [project.urls]

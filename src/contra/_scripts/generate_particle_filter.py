@@ -20,8 +20,11 @@ import h5py as h5
 from QuasarCode import Settings, Console
 from QuasarCode.Data import VersionInfomation
 from QuasarCode.Tools import ScriptWrapper
+from QuasarCode.MPI import MPI_Config, synchronyse
 
 #contra-generate-particle-filter ../contra/EAGLE/L12N188/z3/contra-output.hdf5 --snapshots /users/aricrowe/EAGLE/L0012N0188/REFERENCE/data/ --lines-of-sight /users/aricrowe/EAGLE/L0012N0188/REFERENCE/data/los/ --los-only --EAGLE --gas --max-halo-mass 1000000000 --EAGLE-los-id-file ./output-test.hdf5 -v
+
+Console.mpi_output_root_rank_only()
 
 def main():
     ScriptWrapper(
@@ -186,6 +189,11 @@ async def __main(
     # Store the current date at the start in case the file writing occours after midnight.
     start_date = datetime.date.today()
 
+    use_MPI: bool = MPI_Config.comm_size > 1
+    if use_MPI:
+        Console.print_info(f"Running with MPI on {MPI_Config.comm_size} ranks.")
+        Console.print_debug(f"Root MPI rank is {MPI_Config.root}.")
+
     if not (min_halo_mass or max_halo_mass or min_scaled_halo_mass or max_scaled_halo_mass or min_ejection_distance or max_ejection_distance):
         Console.print_error("Must specify at leas one filter argument.")
         Console.print_info("Terminating...")
@@ -231,13 +239,13 @@ async def __main(
         Console.print_error("--EAGLE and --lines-of-sight options set without --EAGLE-los-id-file.\nFiltering EAGLE line-of-sight files requires the recovery of the particle IDs.")
         Console.print_info("Terminating...")
         return
-    
+
     if file_index is not None:
         if not los_only and los_directory is not None:
             Console.print_error("Specifying a specific file index is only allowed when running on either snapshots or line-of-sight files exclusivley!")
             Console.print_info("Terminating...")
             return
-        
+
     if bits_per_mask_int is not None and bits_per_mask_int not in (8, 16, 32, 64):
         Console.print_error(f"Invalid number of bits specified. Got {bits_per_mask_int} but can only be one of 8, 16, 32 & 64")
         Console.print_info("Terminating...")
@@ -246,18 +254,27 @@ async def __main(
     # Ensure that the path is an absolute path
     output_filepath = os.path.abspath(output_filepath)
 
-    if os.path.exists(output_filepath):
-        if not allow_overwrite:
-            if file_index is not None:
-                Console.print_verbose_info("Writing data to existing file as a specific file index has been specified.")
+    able_to_procede: bool
+    if MPI_Config.is_root:
+        able_to_procede = True
+        if os.path.exists(output_filepath):
+            if not allow_overwrite:
+                if file_index is not None:
+                    Console.print_verbose_info("Writing data to existing file as a specific file index has been specified.")
+                else:
+                    Console.print_error("Output file already exists. Either remove it first or explicitley enable overwrite.")
+                    Console.print_info("Terminating...")
+                    synchronyse("able_to_procede")
+                    return
             else:
-                Console.print_error("Output file already exists. Either remove it first or explicitley enable overwrite.")
-                Console.print_info("Terminating...")
-                return
-        else:
-            Console.print_warning("Pre-existing output file will be overwritten.")
-    elif False:#TODO: check for valid file location (to prevent an error at the last minute!)
-        pass
+                Console.print_warning("Pre-existing output file will be overwritten.")
+        elif False:#TODO: check for valid file location (to prevent an error at the last minute!)
+            pass
+        synchronyse("able_to_procede")
+    else:
+        synchronyse("able_to_procede")
+        if not able_to_procede:
+            return
 
     Console.print_info("Identifying snapshot and catalogue files and loading halo search data.")
 

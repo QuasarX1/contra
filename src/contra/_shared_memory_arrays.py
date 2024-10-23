@@ -8,6 +8,7 @@ from numpy.typing import DTypeLike, ArrayLike, NDArray
 import multiprocessing
 #from multiprocessing.synchronize import Lock as LockType
 from threading import Lock as LockType
+from traceback import TracebackException
 #from _thread import LockType
 from multiprocessing.managers import SyncManager
 from typing import TYPE_CHECKING, cast as typing_cast, Any, Union, Tuple, Generic, TypeVar, ParamSpec, Concatenate
@@ -22,6 +23,8 @@ import traceback
 import os
 import uuid
 import h5py
+
+from QuasarCode.MPI import MPI_Config, mpi_barrier
 
 COUNTER_SHAPE = (1, )
 COUNTER_DATATYPE = np.int64
@@ -52,6 +55,27 @@ class SharedArray_TransmissionData(Struct):
 
 
 
+#class _wrapper(object):
+#    def __init__(self, val: np.ndarray):
+#        self.data: np.ndarray = val
+#    def fill(self, value: Any) -> "_wrapper":
+#        self.data.fill(value)
+#        return self
+#class SharedArray(object):
+#    """
+#    DEBUGGING NULL PLACEHOLDER!
+#    REMOVE THIS CODE!!!!!!!!!!
+#    """
+#    @staticmethod
+#    def create(shape: Union[int, Tuple[int, ...]], dtype: DTypeLike = np.float64, name: Union[str, None] = None, shepherd: "SharedArray_Shepherd|None" = None) -> _wrapper:
+#        return _wrapper(np.empty(shape = shape, dtype = dtype))
+#    @staticmethod
+#    def copy_to_shared(array: np.ndarray, /, name: Union[str, None] = None, shepherd: "SharedArray_Shepherd|None" = None) -> _wrapper:
+#        return _wrapper(array)
+#    @staticmethod
+#    def as_shared(array: np.ndarray, /, name: Union[str, None] = None, shepherd: "SharedArray_Shepherd|None" = None) -> _wrapper:
+#        return _wrapper(array)
+
 class SharedArray(object):
     """
     WARNING: make sure to either call `<instance>.free()` before the wrapper object goes out of scope or use a context manager (`with <instance>:`) to avoid memory leaks!
@@ -69,18 +93,39 @@ class SharedArray(object):
     To access the array from a different process, pass the `<instance>.info` object to the process and then pass it to `SharedArray.load(<info>)`.
     """
 
-    _manager: Union[SyncManager, None] = None
+    _manager: SyncManager|None = None
     _is_initialised: bool = False
 
     @staticmethod
     def _make_lock() -> LockType:
+#        return multiprocessing.Lock()
         if not SharedArray._is_initialised:
             SharedArray.initialise()
-        return typing_cast(SyncManager, SharedArray._manager).Lock()
+        try:
+            Console.print_debug("Reached barrier.")
+            mpi_barrier()#TODO: remove this!!!!!!!!!!!!!!!!!!!!!
+            Console.print_debug("Ready to create mutex lock.")
+            for i in range(MPI_Config.comm_size):
+                if i == MPI_Config.rank:
+                    Console.print_debug("Creating mutex lock.")
+#                    lock = typing_cast(SyncManager, SharedArray._manager).Lock()
+                    lock = SharedArray._manager.Lock()
+                mpi_barrier()
+            Console.print_debug("SUCCESS!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        except ConnectionResetError as e:
+            raise RuntimeError(f"Unable to create mutex lock object from {SharedArray._manager}.\nCaused by:\n\n{TracebackException.from_exception(e).format()}") from e
+        return lock
 
     @staticmethod
     def initialise(manager: Union[SyncManager, None] = None):
-        SharedArray._manager = manager if manager is not None else multiprocessing.Manager()
+#        SharedArray._is_initialised = True
+#        return
+        try:
+            if manager is None:
+                Console.print_debug("Creating multiprocessing manager.")
+            SharedArray._manager = manager if manager is not None else multiprocessing.Manager()
+        except EOFError as e:
+            raise FileExistsError(f"Cached multiprocessing manager server file still exists.\nCaused by:\n\n{TracebackException.from_exception(e).format()}") from e
         SharedArray._is_initialised = True
 
     def __init__(self, lock: LockType, counter_memory: SharedMemory, data_memory: SharedMemory, shape: Tuple[int, ...], dtype: DTypeLike, debugging_name: Union[str, None], shepherd: "SharedArray_Shepherd|None" = None) -> None:

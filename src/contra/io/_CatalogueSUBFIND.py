@@ -12,7 +12,7 @@ import h5py as h5
 from QuasarCode import Console
 
 from .._ParticleType import ParticleType
-from .._ArrayReorder import ArrayReorder
+from .._ArrayReorder import ArrayReorder, ArrayReorder_2
 from ._CatalogueBase import CatalogueBase
 from ._SnapshotEAGLE import SnapshotEAGLE
 from ._builtin_simulation_types import SimType_EAGLE
@@ -91,10 +91,14 @@ class CatalogueSUBFIND(CatalogueBase[SimType_EAGLE]):
     def snapshot(self) -> SnapshotEAGLE:
         return super().snapshot
 
+    #TODO: when using MPI, only read nessessary particles (HOW!?) -------------------------------------------------------------------------------
     def get_membership_field(self, field: str, part_type: ParticleType, dtype = float) -> Tuple[np.ndarray, float, float, float]:
         files_with_particles = np.where(self.__n_membership_particles_per_file[:, part_type.value] > 0)[0]
         if len(files_with_particles) == 0:
             raise IOError(f"No files in snapshot's catalogue contained {part_type.name} particles.")
+
+#        result = self.snapshot._file_object.read_extra_dataset(part_type.value, field, self.__membership_files[0])#TODO: circular reference as this is needed to be called before the super constructor call! this dosent work as there are a different number of particles!!!!!!!
+
         first_file_with_part_type_field = files_with_particles[0]
         result = np.empty(self.__n_total_membership_particles[part_type.value], dtype = dtype)
         for i in range(self.__n_parallel_components_membership):
@@ -154,12 +158,12 @@ class CatalogueSUBFIND(CatalogueBase[SimType_EAGLE]):
     def get_halo_top_level_parent_IDs(self, particle_type: Union[ParticleType, None] = None) -> np.ndarray:#TODO: using indexes - update api to make this clear!
         return self.get_halo_IDs(particle_type) # Just usingthe FOF groups, so no tree structure. Therfore, own ID is top-level ID
 
-    def get_halo_IDs_by_snapshot_particle(self, particle_type: ParticleType, include_unbound: bool = True) -> np.ndarray:#TODO: using indexes - update api to make this clear!
+    def get_halo_IDs_by_snapshot_particle(self, particle_type: ParticleType, include_unbound: bool = True, snapshot_particle_ids: np.ndarray|None = None) -> np.ndarray:#TODO: using indexes - update api to make this clear!
         if not include_unbound:
             raise NotImplementedError("include_unbound param not supported for EAGLE data.")
         group_numbers = self.get_membership_field("GroupNumber", particle_type, int)[0]
         fof_group_only_mask = group_numbers > 0
-        return ArrayReorder.create(self.get_membership_field("ParticleIDs", particle_type, int)[0], self.snapshot.get_IDs(particle_type), source_order_filter = fof_group_only_mask)(group_numbers, default_value = -1) - 1
+        return ArrayReorder.create(self.get_membership_field("ParticleIDs", particle_type, int)[0], snapshot_particle_ids if snapshot_particle_ids is not None else self.snapshot.get_IDs(particle_type), source_order_filter = fof_group_only_mask)(group_numbers, default_value = -1) - 1
 
     def get_particle_IDs(self, particle_type: ParticleType, include_unbound: bool = True) -> np.ndarray:
         if not include_unbound:

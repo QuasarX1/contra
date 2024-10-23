@@ -11,11 +11,12 @@ from unyt import unyt_array, unyt_quantity
 from h5py import File as HDF5_File
 from pyread_eagle import EagleSnapshot
 from QuasarCode import Settings, Console
-from QuasarCode.MPI import MPI_Config
+from QuasarCode.MPI import MPI_Config, mpi_get_slice
 
 from .._ParticleType import ParticleType
 from ._SnapshotBase import SnapshotBase
 from ._builtin_simulation_types import SimType_EAGLE
+from .._ArrayReorder import ArrayReorder_MPI
 
 class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
     """
@@ -28,7 +29,7 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
         Create an EagleSnapshot instance.
         """
         Console.print_debug("Creating pyread_eagle object:")
-        return EagleSnapshot(filepath, Settings.debug)
+        return EagleSnapshot(filepath, Settings.debug and Settings.verbose)
 
     def __init__(self, filepath: str) -> None:
         Console.print_debug(f"Loading EAGLE snapshot from: {filepath}")
@@ -79,12 +80,37 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
 
         self.__file_object = SnapshotEAGLE.make_reader_object(filepath)
         Console.print_debug("Calling pyread_eagle object's select_region method:")
+        #TODO: this will proberbly introduce a bug where the total number of particles read from the snap header is inaccurate!!!!
         self.__file_object.select_region(0.0, self.__box_size_internal_units, 0.0, self.__box_size_internal_units, 0.0, self.__box_size_internal_units)
 
         # If MPI is in use, select only a portion of the particles
-        #TODO: DOES THIS BREAK THE HALO READER!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         if Settings.mpi_avalible and MPI_Config.comm_size > 1:
             self.__file_object.split_selection(MPI_Config.rank, MPI_Config.comm_size)
+
+            # Calculate the MPI reorder opperation to evenly distribute read data between all ranks
+            # This is needed as pyread_eagle only splits data between ranks by chunk, meaning uneven particle numbers and complications involving more ranks than chunks
+            expected_lengths_total = self._get_number_of_particles()
+            expected_lengths_this_rank = self._get_number_of_particles_this_rank()
+            self.__data_read_reorder: dict[ParticleType, ArrayReorder_MPI] = {}
+            for part_type in ParticleType.get_all():
+                start_ids = self.__file_object.read_dataset(part_type.value, "ParticleIDs")
+                if start_ids is None:
+                    start_ids = np.empty((0,), dtype = int)
+                redistributed_ids = np.empty(expected_lengths_this_rank[part_type], dtype = start_ids.dtype)
+                sending_chunk_sizes: list[int]|None = MPI_Config.comm.gather(len(start_ids))
+                return_chunk_sizes: list[int]|None = MPI_Config.comm.gather(expected_lengths_this_rank[part_type])
+                all_ids = np.empty(expected_lengths_total[part_type], dtype = start_ids.dtype)
+                MPI_Config.comm.Gatherv(sendbuf = start_ids, recvbuf = (all_ids, sending_chunk_sizes) if MPI_Config.is_root else None, root = MPI_Config.root)
+                MPI_Config.comm.Scatterv(sendbuf = (all_ids, return_chunk_sizes) if MPI_Config.is_root else None, recvbuf = redistributed_ids, root = MPI_Config.root)
+                del sending_chunk_sizes
+                del return_chunk_sizes
+                del all_ids
+                self.__data_read_reorder[part_type] = ArrayReorder_MPI.create(start_ids, redistributed_ids)
+                del start_ids
+                del redistributed_ids
+
+        else:
+            self.__data_read_reorder = { part_type : (lambda x: x) for part_type in ParticleType.get_all() }
 
         super().__init__(
             filepath = filepath,
@@ -233,6 +259,8 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
                 continue # If any of the axes are of 0 length, don't bother
                          # Should only occour when a region is specified adjacent to but entierly outside of the box
             self.__file_object.select_region(*region)
+
+        #TODO: recalculate num particles total and per rank and ask parent to update stored values!
     
     def make_cgs_data(self, cgs_units: str, data: np.ndarray, h_exp: float, cgs_conversion_factor: float, a_exp: float = 0.0) -> unyt_array:
         """
@@ -269,47 +297,57 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
 
     def _get_number_of_particles(self) -> Dict[ParticleType, int]:
         return { p : int(self.__number_of_particles[p.value]) for p in ParticleType.get_all() }
+    def _get_number_of_particles_this_rank(self) -> Dict[ParticleType, int]:
+        return { p : (limits:=mpi_get_slice(n_parts:=int(self.__number_of_particles[p.value])).indices(n_parts))[1] - limits[0] for p in ParticleType.get_all() }
+    
+    def __read_dataset(self, particle_type: ParticleType, field_name: str, expected_dtype) -> np.ndarray:
+        #return self.__data_read_reorder[particle_type](loaded_data if (loaded_data:=self.__file_object.read_dataset(particle_type.value, field_name)) is not None else np.empty((0,), dtype = expected_dtype))
+        loaded_data = self.__file_object.read_dataset(particle_type.value, field_name)
+        processed_object = loaded_data if loaded_data is not None else np.empty((0,), dtype = expected_dtype)
+        redistributed_data =  self.__data_read_reorder[particle_type](processed_object)
+        return redistributed_data
 
     def get_IDs(self, particle_type: ParticleType) -> np.ndarray:
-        return self.__file_object.read_dataset(particle_type.value, "ParticleIDs")
+#        return self.__data_read_reorder[particle_type](self.__file_object.read_dataset(particle_type.value, "ParticleIDs"))
+        return self.__read_dataset(particle_type, "ParticleIDs", expected_dtype = int)
 
     def get_smoothing_lengths(self, particle_type: ParticleType) -> unyt_array:
-        return self._convert_to_cgs_length(self.__file_object.read_dataset(particle_type.value, "SmoothingLength")).to("Mpc")
+        return self._convert_to_cgs_length(self.__read_dataset(particle_type, "SmoothingLength", expected_dtype = float)).to("Mpc")
 
     def _get_masses(self, particle_type: ParticleType) -> unyt_array:
         if particle_type == ParticleType.dark_matter:
             return self._convert_to_cgs_mass(np.full(self.number_of_particles(ParticleType.dark_matter), self.__dm_mass_internal_units)).to("Msun")
-        return self._convert_to_cgs_mass(self.__file_object.read_dataset(particle_type.value, "Mass")).to("Msun")
+        return self._convert_to_cgs_mass(self.__read_dataset(particle_type, "Mass", expected_dtype = float)).to("Msun")
 
     def get_black_hole_subgrid_masses(self) -> unyt_array:
-        return self._convert_to_cgs_mass(self.__file_object.read_dataset(ParticleType.black_hole.value, "BH_Mass")).to("Msun")
+        return self._convert_to_cgs_mass(self.__read_dataset(ParticleType.black_hole, "BH_Mass", expected_dtype = float)).to("Msun")
 
     def get_black_hole_dynamical_masses(self) -> unyt_array:
-        return self._convert_to_cgs_mass(self.__file_object.read_dataset(ParticleType.black_hole.value, "Mass")).to("Msun")
+        return self._convert_to_cgs_mass(self.__read_dataset(ParticleType.black_hole, "Mass", expected_dtype = float)).to("Msun")
 
     def get_positions(self, particle_type: ParticleType) -> unyt_array:
-        return self._convert_to_cgs_length(self.__file_object.read_dataset(particle_type.value, "Coordinates")).to("Mpc")
+        return self._convert_to_cgs_length(self.__read_dataset(particle_type, "Coordinates", expected_dtype = float)).to("Mpc")
 
     def get_velocities(self, particle_type: ParticleType) -> unyt_array:
-        return self._convert_to_cgs_velocity(self.__file_object.read_dataset(particle_type.value, "Velocity")).to("km/s")
+        return self._convert_to_cgs_velocity(self.__read_dataset(particle_type, "Velocity", expected_dtype = float)).to("km/s")
 
     #TODO: check units and come up with a better way of doing the unit assignment and conversion
     def _get_sfr(self, particle_type: ParticleType) -> unyt_array:
-        return unyt_array(self.__file_object.read_dataset(particle_type.value, "StarFormationRate"), units = "Msun/yr")
+        return unyt_array(self.__read_dataset(particle_type, "StarFormationRate", expected_dtype = float), units = "Msun/yr")
 
     def _get_metalicities(self, particle_type: ParticleType) -> unyt_array:
-        return unyt_array(self.__file_object.read_dataset(particle_type.value, "Metallicity"), units = None)
+        return unyt_array(self.__read_dataset(particle_type, "Metallicity", expected_dtype = float), units = None)
 
     def _get_densities(self, particle_type: ParticleType) -> unyt_array:
         return self.make_cgs_data(
             "g/cm**3",
-            self.__file_object.read_dataset(particle_type.value, "Density"),
+            self.__read_dataset(particle_type, "Density", expected_dtype = float),
             h_exp = 2.0,
             cgs_conversion_factor = self.__cgs_unit_conversion_factor_density
         ).to("Msun/Mpc**3")
 
     def _get_temperatures(self, particle_type: ParticleType) -> unyt_array:
-        return unyt_array(self.__file_object.read_dataset(particle_type.value, "Temperature"), units = "K")
+        return unyt_array(self.__read_dataset(particle_type, "Temperature", expected_dtype = float), units = "K")
 
     @staticmethod
     def generate_filepaths(
