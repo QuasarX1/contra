@@ -36,6 +36,7 @@ dependencies = [
   "QuasarCode",
   "mpi4py",
   "tol_colors",
+  "atomic-weights",
 ]
 
 [project.urls]
@@ -53,7 +54,8 @@ contra-run-complete = "contra._scripts.contra_run_forwards:main"
 contra-generate-particle-filter = "contra._scripts.generate_particle_filter:main"
 contra-plot-igm-occupancy = "contra._scripts.plot_cumulitive_particles:main"
 contra-plot-igm-occupancy-hist = "contra._scripts.plot_particle_histograms:main"
-contra-plot-environment = "contra._scripts.plot_temp_density:main"
+contra-plot-environment = "contra._scripts.plot_temp_density_all_particles:main"
+contra-plot-tracked-environment = "contra._scripts.plot_temp_density:main"
 contra-generate-eagle-los-ids = "contra._scripts.recover_EAGLE_los_ids:main"
 contra-plot-eagle-recovered-los = "contra._scripts.plot_recovered_line_of_sight:main"
 contra-check-eagle = "contra._scripts.check_eagle_data:main"

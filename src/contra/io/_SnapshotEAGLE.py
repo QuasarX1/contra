@@ -11,12 +11,15 @@ from unyt import unyt_array, unyt_quantity
 from h5py import File as HDF5_File
 from pyread_eagle import EagleSnapshot
 from QuasarCode import Settings, Console
-from QuasarCode.MPI import MPI_Config, mpi_get_slice
+from QuasarCode.MPI import MPI_Config, mpi_get_slice, mpi_gather_array, mpi_scatter_array, mpi_redistribute_array_evenly
+import atomic_weights
 
 from .._ParticleType import ParticleType
 from ._SnapshotBase import SnapshotBase
 from ._builtin_simulation_types import SimType_EAGLE
 from .._ArrayReorder import ArrayReorder_MPI
+
+ATOMIC_MASS_UNIT = unyt_quantity(1.661e-24, units = "g")
 
 class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
     """
@@ -29,16 +32,19 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
         Create an EagleSnapshot instance.
         """
         Console.print_debug("Creating pyread_eagle object:")
-        return EagleSnapshot(filepath, Settings.debug and Settings.verbose)
+#        return EagleSnapshot(filepath, Settings.debug and Settings.verbose)
+        return EagleSnapshot(filepath)
 
     def __init__(self, filepath: str) -> None:
         Console.print_debug(f"Loading EAGLE snapshot from: {filepath}")
 
-        pattern = re.compile(r'.*sn[ai]pshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]sn[ai]p_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
+        #pattern = re.compile(r'.*sn[ai]pshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]sn[ai]p_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
+        pattern = re.compile(r'.*sn(?P<snap_type_letter>[ai])pshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]sn(?P=snap_type_letter)p_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
         match = pattern.match(filepath)
         if not match:
             raise ValueError(f"Snapshot filepath \"{filepath}\" does not conform to the naming scheme of an EAGLE snapshot. EAGLE snapshot files must have a clear snapshot number component in both the folder and file names.")
         snap_num = match.group("number")
+        is_snipshot = match.group("snap_type_letter") == "i"
 
         hdf5_reader = HDF5_File(filepath)
 
@@ -93,21 +99,41 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
             expected_lengths_this_rank = self._get_number_of_particles_this_rank()
             self.__data_read_reorder: dict[ParticleType, ArrayReorder_MPI] = {}
             for part_type in ParticleType.get_all():
-                start_ids = self.__file_object.read_dataset(part_type.value, "ParticleIDs")
-                if start_ids is None:
-                    start_ids = np.empty((0,), dtype = int)
-                redistributed_ids = np.empty(expected_lengths_this_rank[part_type], dtype = start_ids.dtype)
-                sending_chunk_sizes: list[int]|None = MPI_Config.comm.gather(len(start_ids))
-                return_chunk_sizes: list[int]|None = MPI_Config.comm.gather(expected_lengths_this_rank[part_type])
-                all_ids = np.empty(expected_lengths_total[part_type], dtype = start_ids.dtype)
-                MPI_Config.comm.Gatherv(sendbuf = start_ids, recvbuf = (all_ids, sending_chunk_sizes) if MPI_Config.is_root else None, root = MPI_Config.root)
-                MPI_Config.comm.Scatterv(sendbuf = (all_ids, return_chunk_sizes) if MPI_Config.is_root else None, recvbuf = redistributed_ids, root = MPI_Config.root)
-                del sending_chunk_sizes
-                del return_chunk_sizes
-                del all_ids
-                self.__data_read_reorder[part_type] = ArrayReorder_MPI.create(start_ids, redistributed_ids)
-                del start_ids
-                del redistributed_ids
+
+                self.__data_read_reorder[part_type] = mpi_redistribute_array_evenly
+
+#                start_ids = self.__file_object.read_dataset(part_type.value, "ParticleIDs")
+#                if start_ids is None:
+#                    start_ids = np.empty((0,), dtype = int)
+#                redistributed_ids = np.empty(expected_lengths_this_rank[part_type], dtype = start_ids.dtype)
+#                sending_chunk_sizes: list[int]|None = MPI_Config.comm.gather(len(start_ids))
+#                return_chunk_sizes: list[int]|None = MPI_Config.comm.gather(expected_lengths_this_rank[part_type])
+#                all_ids: np.ndarray|None = np.empty(expected_lengths_total[part_type], dtype = start_ids.dtype) if MPI_Config.is_root else None
+#                if MPI_Config.is_root:
+#                    Console.print_debug(start_ids.shape, start_ids.dtype)
+#                    Console.print_debug(all_ids.shape, all_ids.dtype)
+#                    Console.print_debug(sum(sending_chunk_sizes))
+#                    Console.print_debug(MPI_Config.root)
+#                if MPI_Config.is_root:
+#                    Console.print_info(part_type, "Gathering")
+#                #MPI_Config.comm.Gatherv(sendbuf = start_ids, recvbuf = (all_ids, sending_chunk_sizes) if MPI_Config.is_root else None, root = MPI_Config.root)
+#                mpi_gather_array(start_ids, target_buffer = all_ids)
+#                if MPI_Config.is_root:
+#                    Console.print_info(part_type, "Scattering")
+#                #MPI_Config.comm.Scatterv(sendbuf = (all_ids, return_chunk_sizes) if MPI_Config.is_root else None, recvbuf = redistributed_ids, root = MPI_Config.root)
+#                mpi_scatter_array(all_ids, target_buffer = redistributed_ids)
+#                if MPI_Config.is_root:
+#                    Console.print_info(part_type, "DONE")
+#                del sending_chunk_sizes
+#                del return_chunk_sizes
+#                del all_ids
+#                if MPI_Config.is_root:
+#                    Console.print_info(part_type, "Creating local reorder")
+#                self.__data_read_reorder[part_type] = ArrayReorder_MPI.create(start_ids, redistributed_ids, assume_one_to_one_mapping = True)
+#                if MPI_Config.is_root:
+#                    Console.print_info(part_type, "DONE")
+#                del start_ids
+#                del redistributed_ids
 
         else:
             self.__data_read_reorder = { part_type : (lambda x: x) for part_type in ParticleType.get_all() }
@@ -119,7 +145,8 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
             hubble_param = hubble_param,
             omega_baryon = omega_baryon,
             expansion_factor = expansion_factor,
-            box_size = unyt_array(np.array([self.__box_size_internal_units, self.__box_size_internal_units, self.__box_size_internal_units], dtype = float) * (hubble_param ** self.__length_h_exp) * self.__length_cgs_conversion_factor, units = "cm").to("Mpc")
+            box_size = unyt_array(np.array([self.__box_size_internal_units, self.__box_size_internal_units, self.__box_size_internal_units], dtype = float) * (hubble_param ** self.__length_h_exp) * self.__length_cgs_conversion_factor, units = "cm").to("Mpc"),
+            snipshot = is_snipshot
         )
 
     @property
@@ -304,6 +331,7 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
         #return self.__data_read_reorder[particle_type](loaded_data if (loaded_data:=self.__file_object.read_dataset(particle_type.value, field_name)) is not None else np.empty((0,), dtype = expected_dtype))
         loaded_data = self.__file_object.read_dataset(particle_type.value, field_name)
         processed_object = loaded_data if loaded_data is not None else np.empty((0,), dtype = expected_dtype)
+        Console.print_info(f"PROGRESS CHECK 1.1")
         redistributed_data =  self.__data_read_reorder[particle_type](processed_object)
         return redistributed_data
 
@@ -337,6 +365,9 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
 
     def _get_metalicities(self, particle_type: ParticleType) -> unyt_array:
         return unyt_array(self.__read_dataset(particle_type, "Metallicity", expected_dtype = float), units = None)
+    
+    def _get_mean_enrichment_redshift(self, particle_type: ParticleType) -> unyt_array:
+        return unyt_array(self.__read_dataset(particle_type, "MetalMassWeightedRedshift", expected_dtype = float), units = None)
 
     def _get_densities(self, particle_type: ParticleType) -> unyt_array:
         return self.make_cgs_data(
@@ -345,6 +376,35 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
             h_exp = 2.0,
             cgs_conversion_factor = self.__cgs_unit_conversion_factor_density
         ).to("Msun/Mpc**3")
+    
+    def _get_number_densities(self, particle_type: ParticleType, element: str) -> unyt_array:
+        if self.snipshot:
+            raise KeyError("Unable to read abundance data - snipshots do not contain this information.")
+        
+        element = element.title()
+
+        atomic_weight: unyt_quantity
+        match element:
+            case "Hydrogen":  atomic_weight = atomic_weights.H  * ATOMIC_MASS_UNIT
+            case "Helium":    atomic_weight = atomic_weights.He * ATOMIC_MASS_UNIT
+            case "Carbon":    atomic_weight = atomic_weights.C  * ATOMIC_MASS_UNIT
+            case "Nitrogen":  atomic_weight = atomic_weights.N  * ATOMIC_MASS_UNIT
+            case "Oxygen":    atomic_weight = atomic_weights.O  * ATOMIC_MASS_UNIT
+            case "Neon":      atomic_weight = atomic_weights.Ne * ATOMIC_MASS_UNIT
+            case "Magnesium": atomic_weight = atomic_weights.Mg * ATOMIC_MASS_UNIT
+            case "Silicon":   atomic_weight = atomic_weights.Si * ATOMIC_MASS_UNIT
+            case "Iron":      atomic_weight = atomic_weights.Fe * ATOMIC_MASS_UNIT
+            case _:
+                raise ValueError(f"Unable to find abundances for element \"{element}\".")
+
+        particle_densities = self.make_cgs_data(
+            "g/cm**3",
+            self.__read_dataset(particle_type, "Density", expected_dtype = float),
+            h_exp = 2.0,
+            cgs_conversion_factor = self.__cgs_unit_conversion_factor_density
+        )
+
+        return particle_densities * self.__read_dataset(particle_type, f"ElementAbundance/{element}", expected_dtype = float) / atomic_weight
 
     def _get_temperatures(self, particle_type: ParticleType) -> unyt_array:
         return unyt_array(self.__read_dataset(particle_type, "Temperature", expected_dtype = float), units = "K")

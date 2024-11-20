@@ -29,7 +29,7 @@ N_PLOTTING_HEXES = 500
 
 def main():
     ScriptWrapper(
-        command = "contra-plot-tracked-environment",
+        command = "contra-plot-environment",
         authors = [ScriptWrapper.AuthorInfomation()],
         version = ScriptWrapper.VersionInfomation.from_string("1.0.0"),
         edit_date = datetime.date(2024, 11, 20),
@@ -43,16 +43,33 @@ def main():
                 conversion_function = float,
                 description = "Redshift at which to plot data.\nIf a match is not found, use the file with the closest redshift with a higher value."
             ),
+            ScriptWrapper.Flag(
+                name = "EAGLE",
+                sets_param = "is_EAGLE",
+                description = "Running on EAGLE data.",
+                conflicts = ["is_SWIFT"]
+            ),
+            ScriptWrapper.Flag(
+                name = "SWIFT",
+                sets_param = "is_SWIFT",
+                description = "Running on data generated using SWIFT.",
+                conflicts = ["is_EAGLE"]
+            ),
             ScriptWrapper.OptionalParam[str](
                 name = "data",
                 short_name = "i",
-                sets_param = "input_filepath",
-                default_value = "./contra-output.hdf5",
-                description = "Input contra data file. Defaults to \"./contra-output.hdf5\"."
+                sets_param = "input_directory",
+                default_value = "./",
+                description = "Input simulation data directory. Defaults to the current working directory."
+            ),
+            ScriptWrapper.Flag(
+                name = "snipshot",
+                sets_param = "use_snipshots",
+                description = "Use particle data from snipshots.\nWARNING: Some options may not be supported or may make assumptions where data is not avalible (e.g. elemental abundances)."
             ),
             ScriptWrapper.Flag(
                 name = "metals-only",
-                description = "Ignore tracked particles with no metal content."
+                description = "Ignore particles with no metal content."
             ),
             ScriptWrapper.Flag(
                 name = "use-number-density",
@@ -69,26 +86,9 @@ def main():
                 description = "Colour by the metal mass fraction."
             ),
             ScriptWrapper.Flag(
-                name = "colour-last-halo-mass",
-                sets_param = "plot_last_halo_mass",
-                description = "Colour by the mass of the last known halo."
-            ),
-            ScriptWrapper.Flag(
-                name = "colour-metal-weighted-last-halo-mass",
-                sets_param = "plot_metal_weighted_last_halo_mass",
-                description = "Colour by mean metal mass weighted log10 last known halo mass.\nRequires the use of the --mean option.",
-                requirements = ["mean"]
-            ),
-            ScriptWrapper.Flag(
-                name = "colour-metal-weighted-last-halo-redshift",
-                sets_param = "plot_metal_weighted_last_halo_redshift",
-                description = "Colour by mean metal mass weighted last known halo redshift.\nRequires the use of the --mean option.",
-                requirements = ["mean"]
-            ),
-            ScriptWrapper.OptionalParam[str](
-                name = "snapshots",
-                sets_param = "snapshot_directory",
-                description = "Where to search for snapshots.\nDefaults to the snapshot location specified in the Contra output file."
+                name = "colour-enrichment-redshift",
+                sets_param = "plot_z_Z",
+                description = "Colour by the averaged redshift at which metal enrichment occoured."
             ),
             ScriptWrapper.OptionalParam[str](
                 name = "output-file",
@@ -197,22 +197,12 @@ def main():
                 conflicts = ["max-colour-metalicity", "max-colour-metalicity-solar"]
             ),
             ScriptWrapper.OptionalParam[float](
-                name = "min-colour-halo-mass",
-                description = "Minimum halo mass (in log10 Msun), below which the colour will be uniform.",
-                conversion_function = float
-            ),
-            ScriptWrapper.OptionalParam[float](
-                name = "max-colour-halo-mass",
-                description = "Maximum halo mass (in log10 Msun), above which the colour will be uniform.",
-                conversion_function = float
-            ),
-            ScriptWrapper.OptionalParam[float](
-                name = "min-colour-halo-redshift",
+                name = "min-colour-redshift",
                 description = "Minimum redshift, below which the colour will be uniform.",
                 conversion_function = float
             ),
             ScriptWrapper.OptionalParam[float](
-                name = "max-colour-halo-redshift",
+                name = "max-colour-redshift",
                 description = "Maximum redshift, above which the colour will be uniform.",
                 conversion_function = float
             ),
@@ -231,14 +221,6 @@ def main():
                 description = "Stack plots as a single column.",
                 conflicts = ["stack-row"]
             ),
-#            ScriptWrapper.Flag(
-#                name = "show-igm",
-#                description = "Draw the z=0 IGM boundary from Wiersma et al. 2010."
-#            ),
-            ScriptWrapper.Flag(
-                name = "ignore-halo-particles",
-                description = "Exclude particles currently in a halo."
-            ),
             ScriptWrapper.Flag(
                 name = "show-contours",
                 description = "Draw contours showing the mass distribution of included particles."
@@ -251,7 +233,14 @@ def main():
             ScriptWrapper.Flag(
                 name = "contours-use-masses",
                 description = "Use contours based on the total mass density in each bin as opposed to the total number density.",
-                requirements = ["show-contours"]
+                requirements = ["show-contours"],
+                conflicts = ["contours-use-metal-masses"]
+            ),
+            ScriptWrapper.Flag(
+                name = "contours-use-metal-masses",
+                description = "Use contours based on the total metal mass density in each bin as opposed to the total number density.",
+                requirements = ["show-contours"],
+                conflicts = ["contours-use-masses"]
             ),
             ScriptWrapper.OptionalParam[list[float]](
                 name = "contour-percentiles",
@@ -283,15 +272,15 @@ def main():
 
 async def __main(
     target_redshift: float,
-    input_filepath: str,
+    is_EAGLE: bool,
+    is_SWIFT: bool,
+    input_directory: str,
+    use_snipshots: bool,
     metals_only: bool,
     use_number_density: bool,
     plot_hist: bool,
     plot_metallicity: bool,
-    plot_last_halo_mass: bool,
-    plot_metal_weighted_last_halo_mass: bool,
-    plot_metal_weighted_last_halo_redshift: bool,
-    snapshot_directory: str | None,
+    plot_z_Z: bool,
     output_filepath: str | None,
     min_density: float | None,
     max_density: float | None,
@@ -309,62 +298,55 @@ async def __main(
     max_colour_metalicity_solar: float | None,
     min_colour_metalicity_plotted: float | None,
     max_colour_metalicity_plotted: float | None,
-    min_colour_halo_mass: float | None,
-    max_colour_halo_mass: float | None,
-    min_colour_halo_redshift: float | None,
-    max_colour_halo_redshift: float | None,
+    min_colour_redshift: float | None,
+    max_colour_redshift: float | None,
     use_mean: bool,
     stack_row: bool,
     stack_column: bool,
-#    show_igm: bool,
-    ignore_halo_particles: bool,
     show_contours: bool,
     contours_use_all_particles: bool,
     contours_use_masses: bool,
+    contours_use_metal_masses: bool,
     contour_percentiles: list[float],
     contour_log10_values: list[float]|None,
     configured_Z_solar: float,
     colourmap: str|None
 ) -> None:
+    
+    # Validate sim type
+    if not (is_EAGLE or is_SWIFT):
+        Console.print_error("Must specify either EAGLE or SWIFT simulation type.")
+        return
+    else:
+        if is_EAGLE:
+            Console.print_verbose_info("Snapshot type: EAGLE")
+        elif is_SWIFT:
+            Console.print_verbose_info("Snapshot type: SWIFT")
+            raise NotImplementedError()
 
     # If not other plot types are specified, plot count bins
-    if not (plot_metallicity or plot_last_halo_mass or plot_metal_weighted_last_halo_mass or plot_metal_weighted_last_halo_redshift):
+    if not (plot_metallicity or plot_z_Z):
         plot_hist = True
 
-    split_files: int
-    try:
-        sections = input_filepath.rsplit(".", maxsplit = 1)
-        int(sections[-1])
-        input_filepath = sections[0]
-        split_files = True
-    except:
-        split_files = not os.path.exists(input_filepath) and os.path.exists(f"{input_filepath}.0")
-    if not split_files and not os.path.exists(input_filepath):
-        Console.print_error(f"Unable to find file or distributed files matching the file " + ("name" if not split_files else "pattern") + f": {input_filepath}")
-        Console.print_info("Terminating...")
-        return
 
-    # Read Contra header data
-    with OutputReader(input_filepath if not split_files else f"{input_filepath}.0") as contra_reader:
-        contra_header = contra_reader.read_header()
-    if not contra_header.has_gas:
-        Console.print_error("Contra data has no results for gas particles.")
-        Console.print_info("Terminating...")
-        return
-    # This will get re-loaded, so free up the memory
-    del contra_header
 
-    Console.print_info("Locating search and simulation data sets.")
+    # Find the requested data file(s)
 
-    if split_files:
-        contra_data = DistributedOutputReader(input_filepath).read(include_stats = False, alternate_simulation_data_directory = snapshot_directory)
+    sim_data = FileTreeScraper_EAGLE(input_directory)
+    if use_snipshots:
+        selected_data_file_type_info = sim_data.snipshots
+        if len(selected_data_file_type_info) == 0:
+            Console.print_warning(f"No snipshots avalible for this simulation dataset.")
+            Console.print_info("Terminating...")
+            return
     else:
-        contra_data = ContraData.load(input_filepath, include_stats = False, alternate_simulation_data_directory = snapshot_directory)
-
-    Console.print_verbose_info(f"Successfully loaded data from {input_filepath}" + ("" if not split_files else ".*"))
-
-    target_file_number: str = contra_data.find_file_number_from_redshift(target_redshift)
-    snap: SnapshotBase = contra_data.get_snapshot(target_file_number)
+        selected_data_file_type_info = sim_data.snapshots
+        if len(selected_data_file_type_info) == 0:
+            Console.print_warning(f"No snapshots avalible for this simulation dataset.")
+            Console.print_info("Terminating...")
+            return
+    target_file_number: str = selected_data_file_type_info.find_file_number_from_redshift(target_redshift)
+    snap: SnapshotBase = sim_data.snapshots.get_by_number(target_file_number).load()
 
     Console.print_info(f"Identified particle data at z={snap.redshift}.")
     if target_redshift >= 1.0 and target_redshift - snap.redshift > 0.5 or target_redshift < 1.0 and target_redshift - snap.redshift > 0.1:
@@ -380,70 +362,41 @@ async def __main(
 
     Console.print_info("Reading data.")
 
-    gas_dataset: ParticleTypeDataset = cast(ParticleTypeDataset, contra_data.data[target_file_number].gas)
-
-    # Create mask for:
-    #     tracked particles (i.e. must have been in a halo at some point)
-    #     non-zero metallicity
-    #     (optional) particles currently in a halo
-
-    located_particle_mask: np.ndarray = gas_dataset.halo_ids != -1
-
-    #nonzero_halo_mass_mask: np.ndarray = gas_dataset.halo_masses > 0.0
-
-    particle_metalicities: np.ndarray = snap.get_metalicities(ParticleType.gas).value
-
-    data_mask: np.ndarray = located_particle_mask
-    if metals_only:
-        data_mask &= particle_metalicities > 0.0
-    if ignore_halo_particles:
-        data_mask &= gas_dataset.redshifts > snap.redshift
-    n_particles: int = data_mask.sum()
-
-    assert (~(gas_dataset.halo_masses[data_mask] > 0)).sum() == 0
-
-    log10_last_halo_masses: np.ndarray = np.log10(gas_dataset.halo_masses[data_mask])
-    last_halo_redshifts: np.ndarray = gas_dataset.redshifts[data_mask]
-
-    if contours_use_all_particles:
-        all_particle_masses = snap.get_masses(ParticleType.gas).to("Msun").value
-        particle_masses = all_particle_masses[data_mask]
-    else:
-        particle_masses = snap.get_masses(ParticleType.gas).to("Msun").value[data_mask]
-
-    particle_metalicities = particle_metalicities[data_mask]
-    if use_mean:
-        particle_metal_masses: np.ndarray = particle_masses * particle_metalicities
-
-    log10_particle_temperatures: np.ndarray
-    if contours_use_all_particles:
-        all_log10_particle_temperatures = np.log10(snap.get_temperatures(ParticleType.gas).to("K").value)
-        log10_particle_temperatures = all_log10_particle_temperatures[data_mask]
-    else:
-        log10_particle_temperatures = np.log10(snap.get_temperatures(ParticleType.gas).to("K").value[data_mask])
+    log10_particle_temperatures: np.ndarray = np.log10(snap.get_temperatures(ParticleType.gas).to("K").value)
 
     particle_densities: np.ndarray
     if use_number_density:
-        if contours_use_all_particles:
-            all_particle_densities = snap.get_number_densities(ParticleType.gas, "Hydrogen", default_abundance = PRIMORDIAL_H_ABUNDANCE).to("cm**(-3)").value
-            particle_densities = all_particle_densities[data_mask]
-        else:
-            particle_densities = snap.get_number_densities(ParticleType.gas, "Hydrogen").to("cm**(-3)").value[data_mask]
+        particle_densities = snap.get_number_densities(ParticleType.gas, "Hydrogen", default_abundance = PRIMORDIAL_H_ABUNDANCE).to("cm**(-3)").value
     else:
-        if contours_use_all_particles:
-            all_particle_densities = snap.get_densities(ParticleType.gas).to("Msun/Mpc**3").value
-            particle_densities = all_particle_densities[data_mask]
-        else:
-            particle_densities = snap.get_densities(ParticleType.gas).to("Msun/Mpc**3").value[data_mask]
+        particle_densities = snap.get_densities(ParticleType.gas).to("Msun/Mpc**3").value
 
-    particle_indexes: np.ndarray = np.arange(n_particles)
+    if plot_metallicity or metals_only or use_mean or contours_use_metal_masses:
+        particle_metalicities: np.ndarray = snap.get_metalicities(ParticleType.gas).value
+
+    if use_mean or contours_use_metal_masses:
+        particle_masses = snap.get_masses(ParticleType.gas).to("Msun").value
+        if contours_use_metal_masses or plot_z_Z:
+            particle_metal_masses: np.ndarray = particle_masses * particle_metalicities
+
+    if plot_z_Z:
+        particle_z_Z = snap.get_mean_enrichment_redshift(ParticleType.gas).value
+
+
+
+    # Create a mask for the data
+    #TODO: always remove particles with 0 mass?
+
+    data_mask: np.ndarray|slice
+    if metals_only:
+        data_mask = particle_metalicities > 0.0
+    else:
+        data_mask = slice(None, None, None)
 
 
 
     Console.print_info("Converting units.")
 
     # Convert to solar
-    log10_one_plus_particle_metalicities_solar = np.log10(1 + (particle_metalicities / configured_Z_solar))
 
     if min_colour_metalicity is not None:
         min_colour_metalicity_solar = min_colour_metalicity / configured_Z_solar
@@ -464,9 +417,6 @@ async def __main(
 
         log10_particle_overdensities: np.ndarray = np.log10(particle_densities / mean_baryon_density)
 
-        if contours_use_all_particles:
-            all_particle_densities = np.log10(all_particle_densities / mean_baryon_density)
-
         if min_density is not None:
             min_log10_overdensity = min_density / mean_baryon_density
         if max_density is not None:
@@ -474,9 +424,6 @@ async def __main(
 
     else:
         log10_particle_numberdensities: np.ndarray = np.log10(particle_densities)
-
-        if contours_use_all_particles:
-            all_particle_densities = np.log10(all_particle_densities)
 
 
 
@@ -486,32 +433,23 @@ async def __main(
 
     reduce_colour__count = None
     reduce_colour__metalicity = None
-    reduce_colour__last_halo_mass = None
-    reduce_colour__metal_weighted_last_halo_mass = None
-    reduce_colour__metal_weighted_last_halo_redshift = None
+    reduce_colour__z_Z = None
 
     if plot_hist:
         reduce_colour__count = create_hexbin_log10_count()
 
     if plot_metallicity:
         if use_mean:
-#            reduce_colour__metalicity = create_hexbin_weighted_mean(np.log10(particle_metalicities) - np.log10(configured_Z_solar), weights = particle_metal_masses)
-            reduce_colour__metalicity = create_hexbin_log10_weighted_mean(particle_metalicities, weights = particle_masses, offset = -np.log10(configured_Z_solar))
-            #TODO: is this mass or metal mass weighted and does the label need changing?!
+#            reduce_colour__metalicity = create_hexbin_weighted_mean(np.log10(particle_metalicities[data_mask]) - np.log10(configured_Z_solar), weights = particle_masses[data_mask])
+            reduce_colour__metalicity = create_hexbin_log10_weighted_mean(particle_metalicities[data_mask], weights = particle_masses[data_mask], offset = -np.log10(configured_Z_solar))
         else:
-            reduce_colour__metalicity = create_hexbin_median(log10_one_plus_particle_metalicities_solar)
+            reduce_colour__metalicity = create_hexbin_median(np.log10(1 + (particle_metalicities[data_mask] / configured_Z_solar)))
 
-    if plot_last_halo_mass:
+    if plot_z_Z:
         if use_mean:
-            reduce_colour__last_halo_mass = create_hexbin_mean(log10_last_halo_masses)
+            reduce_colour__z_Z = create_hexbin_weighted_mean(particle_z_Z[data_mask], weights = particle_metal_masses[data_mask])
         else:
-            reduce_colour__last_halo_mass = create_hexbin_median(log10_last_halo_masses)
-
-    if plot_metal_weighted_last_halo_mass:
-        reduce_colour__metal_weighted_last_halo_mass = create_hexbin_weighted_mean(log10_last_halo_masses, weights = particle_metal_masses)
-
-    if plot_metal_weighted_last_halo_redshift:
-        reduce_colour__metal_weighted_last_halo_redshift = create_hexbin_weighted_mean(last_halo_redshifts, weights = particle_metal_masses)
+            reduce_colour__z_Z = create_hexbin_median(particle_z_Z[data_mask])
         
 
 
@@ -519,30 +457,34 @@ async def __main(
         # Calculate contouring arguments
 
         Console.print_info("Calculating contours.")
-        if contours_use_all_particles:
+        if contours_use_all_particles or not metals_only:
             Console.print_info("    Contours use all particles.")
         else:
-            Console.print_info("    Contours use only tracked particles.")
+            Console.print_info("    Contours use only particles with nonzero metallicity.")
         if contours_use_masses:
             Console.print_info("    Contours trace total particle mass.")
+        elif contours_use_metal_masses:
+            Console.print_info("    Contours trace total particle metal mass.")
         else:
             Console.print_info("    Contours trace particle counts.")
 
         contour_densities: np.ndarray
         contour_temperatures: np.ndarray
         contour_weights: np.ndarray|None = None
-        if contours_use_all_particles:
-            contour_densities = all_particle_densities
-            contour_temperatures = all_log10_particle_temperatures
-            if contours_use_masses:
-                contour_weights = all_particle_masses
+        if use_number_density:
+            contour_densities = log10_particle_numberdensities
         else:
-            contour_densities = log10_particle_numberdensities if use_number_density else log10_particle_overdensities
-            contour_temperatures = log10_particle_temperatures
-            if contours_use_masses:
-                contour_weights = particle_masses
+            contour_densities = log10_particle_overdensities
+        contour_temperatures = log10_particle_temperatures
+        if contours_use_masses:
+            contour_weights = particle_masses
+        elif contours_use_metal_masses:
+            contour_weights = particle_metal_masses
+        if not contours_use_all_particles and metals_only:
+            contour_densities    =    contour_densities[data_mask]
+            contour_temperatures = contour_temperatures[data_mask]
+            contour_weights      =      contour_weights[data_mask]
 
-        
         h, xedges, yedges = np.histogram2d(contour_densities, contour_temperatures, N_CONTOURING_BINS, weights = contour_weights)
 
         # To get the approximate hex value:
@@ -587,12 +529,11 @@ async def __main(
 
     plt.rcParams['font.size'] = 12
 
-    n_subplots = int(plot_hist) + int(plot_metallicity) + int(plot_last_halo_mass) + int(plot_metal_weighted_last_halo_mass) + int(plot_metal_weighted_last_halo_redshift)
+    n_subplots = int(plot_hist) + int(plot_metallicity) + int(plot_z_Z)
     seperate_plots = (n_subplots == 1) or not (stack_row or stack_column)
 
     current_subplot_index = 0
     if not seperate_plots:
-        #fig, axes = plt.subplots(nrows = n_subplots if stack_column else 1, ncols = n_subplots if stack_row else 1, sharex = "row", sharey = "col", layout = "tight", figsize = (6 * (n_subplots if stack_row else 1), 5.25 * (n_subplots if stack_column else 1)))
         fig, axes = plt.subplots(
             nrows = n_subplots if stack_column else 1,
             ncols = n_subplots if stack_row else 1,
@@ -600,20 +541,18 @@ async def __main(
             sharey = "all",
             layout = "tight",
             gridspec_kw = {"wspace": 0, "hspace": 0},
-#            figsize = (6 * (n_subplots if stack_row else 1), 5.25 * (n_subplots if stack_column else 1))
             figsize = (6 * (n_subplots if stack_row else 1), 6 * (n_subplots if stack_column else 1))
         )
 
     plot_num: int = 0
     for plot_name, label, colour_reduction_function, min_colour, max_colour in zip(
-        ("histogram",                             "metallicity",                                                                                                                   "last-halo-mass",                                                                                               "metal-weighted-last-halo-mass",                                                                                "metal-weighted-last-halo-redshift"),
-#        ("${\\rm log_{10}}$ Number of Particles", ("Metal-mass Weighted Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ 1 + Z ($\\rm Z_{\\rm \\odot}$)", ("Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ $M_{\\rm 200}$ of last halo ($\\rm M_{\\rm \\odot}$)", "Metal-mass Weighted Mean ${\\rm log_{10}}$ $M_{\\rm 200}$ of last halo ($\\rm M_{\\rm \\odot}$)"),
-        ("${\\rm log_{10}}$ Number of Particles", "${\\rm log_{10}}$ " + ("Metal-mass Weighted Mean" if use_mean else "Median") + " Z - ${\\rm log_{10}}$ $\\rm Z_{\\rm \\odot}$", ("Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ $M_{\\rm 200}$ of last halo ($\\rm M_{\\rm \\odot}$)", "Metal-mass Weighted Mean ${\\rm log_{10}}$ $M_{\\rm 200}$ of Last Halo ($\\rm M_{\\rm \\odot}$)",              "Metal-mass Weighted Mean $z$ of Last Halo Membership"),
-        (reduce_colour__count,                    reduce_colour__metalicity,                                                                                                       reduce_colour__last_halo_mass,                                                                                  reduce_colour__metal_weighted_last_halo_mass,                                                                   reduce_colour__metal_weighted_last_halo_redshift),
-        (min_colour_log_count,                    min_colour_metalicity_plotted,                                                                                                   min_colour_halo_mass,                                                                                           min_colour_halo_mass,                                                                                           min_colour_halo_redshift if min_colour_halo_redshift is not None else None),
-        (max_colour_log_count,                    max_colour_metalicity_plotted,                                                                                                   max_colour_halo_mass,                                                                                           max_colour_halo_mass,                                                                                           max_colour_halo_redshift if max_colour_halo_redshift is not None else None)
+        ("histogram",                             "metallicity",                                                                                                             "mean-enrichment-redshift"                           ),
+        ("${\\rm log_{10}}$ Number of Particles", "${\\rm log_{10}}$ " + ("Mass Weighted Mean" if use_mean else "Median") + " Z - ${\\rm log_{10}}$ $\\rm Z_{\\rm \\odot}$", ("Metal Mass Weighted Mean" if use_mean else "Median") + " $z_{\\rm Z}$" ),
+        (reduce_colour__count,                    reduce_colour__metalicity,                                                                                                 reduce_colour__z_Z                                   ),
+        (min_colour_log_count,                    min_colour_metalicity_plotted,                                                                                             min_colour_redshift                                  ),
+        (max_colour_log_count,                    max_colour_metalicity_plotted,                                                                                             max_colour_redshift                                  )
     ):
-        if not ((plot_name == "histogram" and plot_hist) or (plot_name == "metallicity" and plot_metallicity) or (plot_name == "last-halo-mass" and plot_last_halo_mass) or (plot_name == "metal-weighted-last-halo-mass" and plot_metal_weighted_last_halo_mass) or (plot_name == "metal-weighted-last-halo-redshift" and plot_metal_weighted_last_halo_redshift)):
+        if not ((plot_name == "histogram" and plot_hist) or (plot_name == "metallicity" and plot_metallicity) or (plot_name == "mean-enrichment-redshift" and plot_z_Z)):
             continue
 
         plot_num += 1
@@ -627,8 +566,8 @@ async def __main(
             colourmap = tol_colors.LinearSegmentedColormap.from_list("custom-map", ["#125A56", "#FD9A44", "#A01813"])
 
         coloured_object = plot_hexbin(
-            log10_particle_overdensities if not use_number_density else log10_particle_numberdensities,
-            log10_particle_temperatures,
+            log10_particle_overdensities[data_mask] if not use_number_density else log10_particle_numberdensities[data_mask],
+            log10_particle_temperatures[data_mask],
             colour_reduction_function,
             vmin = min_colour, vmax = max_colour,
             cmap = colourmap,
@@ -655,20 +594,6 @@ async def __main(
         else:
             xlims = axes[current_subplot_index].set_xlim((min_log10_numberdensity, max_log10_numberdensity))
         ylims = axes[current_subplot_index].set_ylim((min_log10_temp, max_log10_temp))
-
-#        if show_igm:#TODO: alter this region to be more appropriate for EAGLE/SWIFT data!!!!!!!!!!!!
-#            axes[current_subplot_index].plot(
-#                [xlims[0], 5.75, 5.75, 2.0, 2.0     ],
-#                [7.0,      7.0,  4.5,  4.5, ylims[0]],
-#                color = "black"
-#            )
-#            axes[current_subplot_index].set_xlim(xlims)
-#            axes[current_subplot_index].set_ylim(ylims)
-#            axes[current_subplot_index].text(
-#                2.0, 6.0,
-#                "IGM",
-#                bbox = { "facecolor" : "lightgrey", "edgecolor" : "none" }
-#            )
 
         if seperate_plots:
             axes[current_subplot_index].set_ylabel("${\\rm log_{10}}$ Temperature (${\\rm K}$)")
@@ -705,71 +630,3 @@ async def __main(
             plt.show()
         plt.clf()
         plt.close()
-
-
-
-    return
-
-
-
-#    plt.figure(layout = "tight", figsize = (6, 5.25))
-#
-#    plt.hexbin(log10_particle_overdensities, log10_particle_temperatures, C = particle_indexes, reduce_C_function = reduce_colour__metalicity, gridsize = 500)
-#    plt.colorbar(
-#        label = ("Metal-mass Weighted Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ 1 + Z ($\\rm Z_{\\rm \\odot}$)",
-#        extend =      "both"    if min_colour_metalicity_solar is not None and max_colour_metalicity_solar is not None
-#                 else "min"     if min_colour_metalicity_solar is not None
-#                 else "max"     if                                             max_colour_metalicity_solar is not None
-#                 else "neither"
-#    )
-#
-#    plt.xlabel("${\\rm log_{10}}$ Overdensity = $\\rho$/<$\\rm \\rho$>")
-#    plt.ylabel("${\\rm log_{10}}$ Temperature (${\\rm K}$)")
-#    plt.xlim((min_log10_overdensity, max_log10_overdensity))
-#    plt.ylim((min_log10_temp, max_log10_temp))
-#
-#    if output_filepath is not None:
-#        plt.savefig(output_filepath, dpi = 100)
-#    else:
-#        plt.show()
-
-
-
-
-    plt.hexbin(log10_particle_overdensities, log10_particle_temperatures, C = particle_indexes, reduce_C_function = reduce_colour__last_halo_mass,
-               gridsize = 500, cmap = "viridis", vmin = min_colour_halo_mass, vmax = max_colour_halo_mass)
-    plt.colorbar(
-#        label = ("Metal-mass Weighted Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ Last Halo Mass ($\\rm M_{\\rm \\odot}$)",
-        label = ("Metal-mass Weighted Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ $M_{\\rm 200}$ of last halo ($\\rm M_{\\rm \\odot}$)",
-        extend =      "both"    if min_colour_halo_mass is not None and max_colour_halo_mass is not None
-                 else "min"     if min_colour_halo_mass is not None
-                 else "max"     if                                      max_colour_halo_mass is not None
-                 else "neither"
-    )
-
-    xlims = plt.xlim()
-    ylims = plt.ylim()
-    plt.plot(
-        [xlims[0], 5.75, 5.75, 2.0, 2.0     ],
-        [7.0,      7.0,  4.5,  4.5, ylims[0]],
-        color = "black"
-    )
-    plt.xlim(xlims)
-    plt.ylim(ylims)
-
-    plt.text(
-        2.0, 6.0,
-        "IGM",
-        bbox = { "facecolor" : "lightgrey", "edgecolor" : "none" }
-    )
-
-#    plt.xlabel("${\\rm log_{10}}$ Overdensity = $\\rho$/<$\\rm \\rho$>")
-    plt.xlabel("${\\rm log_{10}}$ $\\rho$/<$\\rm \\rho$>")
-    plt.ylabel("${\\rm log_{10}}$ Temperature (${\\rm K}$)")
-    plt.xlim((min_log10_overdensity, max_log10_overdensity))
-    plt.ylim((min_log10_temp, max_log10_temp))
-
-    if output_filepath is not None:
-        plt.savefig(output_filepath, dpi = 400)
-    else:
-        plt.show()

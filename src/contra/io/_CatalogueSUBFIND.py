@@ -50,10 +50,14 @@ class CatalogueSUBFIND(CatalogueBase[SimType_EAGLE]):
 
         n_groups_per_file = [None] * self.__n_parallel_components_properties
         for i in range(self.__n_parallel_components_properties):
-            with h5.File(self.__halo_data_files[i], "r") as file:
-                if i == 0:
-                    self.__n_total_FOF_groups: int = int(file["FOF"].attrs["TotNgroups"])
-                n_groups_per_file[i] = file["FOF"].attrs["Ngroups"]
+            try:
+                with h5.File(self.__halo_data_files[i], "r") as file:
+                    if i == 0:
+                        self.__n_total_FOF_groups: int = int(file["FOF"].attrs["TotNgroups"])
+                    n_groups_per_file[i] = file["FOF"].attrs["Ngroups"]
+            except Exception as e:
+                Console.print_error(f"Error in file: {self.__halo_data_files[i]}")
+                raise e
         if self.__n_total_FOF_groups != sum(n_groups_per_file):
             Console.print_warning("More FOF haloes in catalogue than reported. Assuming aggrigate number as correct.")
             self.__n_total_FOF_groups = sum(n_groups_per_file)

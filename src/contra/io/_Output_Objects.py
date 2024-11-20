@@ -58,6 +58,8 @@ class HeaderDataset(Struct):
     has_dark_matter
 
     has_statistics
+
+    skipped_file_numbers
     """
 
     version = TypedAutoProperty[VersionInfomation](TypeShield(VersionInfomation),
@@ -86,6 +88,9 @@ class HeaderDataset(Struct):
                 doc = "This output file contains a dataset for dark matter particles.")
     has_statistics = TypedAutoProperty[bool](TypeShield(bool),
                 doc = "This output file contains statistics for each snapshot searched.")
+#    skipped_file_numbers = TypedAutoProperty[tuple[str]](NestedTypeShield(tuple, str),
+    skipped_file_numbers = TypedAutoProperty[tuple[str]](TypeShield(tuple),
+                doc = "File numbers explicitly skipped during the search.")
 
     @staticmethod
     def _read(file: h5.File, parallel: bool) -> "HeaderDataset":
@@ -105,6 +110,10 @@ class HeaderDataset(Struct):
         data.has_black_holes      =                            bool(h.attrs["HasBlackHoles"]          )
         data.has_dark_matter      =                            bool(h.attrs["HasDarkMatter"]          )
         data.has_statistics       =                            bool(h.attrs["HasStatistics"]          )
+        if "SkipFiles" in h.attrs:
+            data.skipped_file_numbers = tuple(h.attrs["SkipFiles"])
+        else:
+            data.skipped_file_numbers = tuple()
         if parallel:
             mpi_barrier()
         return data
@@ -141,6 +150,7 @@ class HeaderDataset(Struct):
         h.attrs["HasBlackHoles"]           = data.has_black_holes
         h.attrs["HasDarkMatter"]           = data.has_dark_matter
         h.attrs["HasStatistics"]           = data.has_statistics
+        h.attrs["SkipFiles"]               = data.skipped_file_numbers
 
         if parallel:
             mpi_barrier()
@@ -263,11 +273,11 @@ class ParticleTypeDataset(Struct):#TODO: data is only float/int 32 bit precision
             end_offsets = np.cumsum(MPI_Config.comm.allgather(group_length))
             group_length = end_offsets[-1]
             rank_slice = slice(end_offsets[MPI_Config.rank - 1] if MPI_Config.rank > 0 else 0, end_offsets[MPI_Config.rank])
-            d.create_dataset(name = "HaloRedshift",        shape = (group_length,),   dtype = data.redshifts.dtype             )[rank_slice] = data.redshifts
-            d.create_dataset(name = "HaloID",              shape = (group_length,),   dtype = data.halo_ids.dtype              )[rank_slice] = data.halo_ids
-            d.create_dataset(name = "HaloMass",            shape = (group_length,),   dtype = data.halo_masses.dtype           )[rank_slice] = data.halo_masses
-            d.create_dataset(name = "RelitiveHaloMass",    shape = (group_length,),   dtype = data.halo_masses_scaled.dtype    )[rank_slice] = data.halo_masses_scaled
-            d.create_dataset(name = "PositionPreEjection", shape = (group_length, 3), dtype = data.positions_pre_ejection.dtype)[rank_slice] = data.positions_pre_ejection
+            d.create_dataset(name = "HaloRedshift",        shape = (group_length,),   dtype = data.redshifts.dtype,              compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.redshifts
+            d.create_dataset(name = "HaloID",              shape = (group_length,),   dtype = data.halo_ids.dtype,               compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.halo_ids
+            d.create_dataset(name = "HaloMass",            shape = (group_length,),   dtype = data.halo_masses.dtype,            compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.halo_masses
+            d.create_dataset(name = "RelitiveHaloMass",    shape = (group_length,),   dtype = data.halo_masses_scaled.dtype,     compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.halo_masses_scaled
+            d.create_dataset(name = "PositionPreEjection", shape = (group_length, 3), dtype = data.positions_pre_ejection.dtype, compression = "gzip", compression_opts = 8, chunks=(1024*8, 3), shuffle = True, fletcher32 = True)[rank_slice] = data.positions_pre_ejection
             mpi_barrier()
 
 #            print(MPI_Config.rank, (d["HaloID"][rank_slice] != data.halo_ids).sum(), flush = True)
@@ -277,11 +287,11 @@ class ParticleTypeDataset(Struct):#TODO: data is only float/int 32 bit precision
 #                Console.print_raw("Written data != input data:", (d["HaloID"][:] != collected_inputs).sum())
 
         else:
-            d.create_dataset(name = "HaloRedshift",        data = data.redshifts)
-            d.create_dataset(name = "HaloID",              data = data.halo_ids)
-            d.create_dataset(name = "HaloMass",            data = data.halo_masses)
-            d.create_dataset(name = "RelitiveHaloMass",    data = data.halo_masses_scaled)
-            d.create_dataset(name = "PositionPreEjection", data = data.positions_pre_ejection)
+            d.create_dataset(name = "HaloRedshift",        data = data.redshifts,              compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
+            d.create_dataset(name = "HaloID",              data = data.halo_ids,               compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
+            d.create_dataset(name = "HaloMass",            data = data.halo_masses,            compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
+            d.create_dataset(name = "RelitiveHaloMass",    data = data.halo_masses_scaled,     compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
+            d.create_dataset(name = "PositionPreEjection", data = data.positions_pre_ejection, compression = "gzip", compression_opts = 8, chunks=(1024*8, 3), shuffle = True, fletcher32 = True)
 
         return d
     
@@ -1302,6 +1312,13 @@ class DistributedOutputReader(object):
 
         self.__map_to_mpi: bool = map_to_mpi
 
+        # If one of the valid components has been passed in, remove the existing index
+        try:
+            sections = filepath.rsplit(".", maxsplit = 1)
+            int(sections[-1])
+            filepath = sections[0]
+        except: pass
+
         self.__readers: list[OutputReader] = []
         filepath += ".{}"
         i: int = -1
@@ -1314,6 +1331,13 @@ class DistributedOutputReader(object):
             raise IndexError(f"Inconsistent number of files and MPI ranks. Unable to assign {self.__n_files} files onto {MPI_Config.comm_size} ranks.")
         
 #        self.__is_open: bool = False
+
+    @property
+    def number_of_files(self) -> int:
+        return self.__n_files
+    
+    def __len__(self) -> int:
+        return self.number_of_files
 
 #    @property
 #    def is_open(self):
@@ -1475,6 +1499,10 @@ class DistributedOutputReader(object):
 
         #TODO:
         #data_struct.simulation_files = (FileTreeScraper_EAGLE if data_struct.header.sim_type == "EAGLE" else FileTreeScraper_SWIFT)(data_struct.header.simulation_directory)
-        data_struct.simulation_files = FileTreeScraper_EAGLE(data_struct.header.simulation_directory)
+        data_struct.simulation_files = FileTreeScraper_EAGLE(
+            data_struct.header.simulation_directory,
+            skip_snapshot_numbers = None if data_struct.header.uses_snipshots else data_struct.header.skipped_file_numbers,
+            skip_snipshot_numbers = data_struct.header.skipped_file_numbers if data_struct.header.uses_snipshots else None
+        )
 
         return data_struct

@@ -27,7 +27,8 @@ class SnapshotBase(SimulationDataBase[T_ISimulation]):
                     hubble_param: float,
                     omega_baryon: float,
                     expansion_factor: float,
-                    box_size: float
+                    box_size: float,
+                    snipshot: bool
                 ) -> None:
         self.__filepath: str = filepath
         self.__file_name: str = os.path.split(self.__filepath)[1]
@@ -37,6 +38,7 @@ class SnapshotBase(SimulationDataBase[T_ISimulation]):
         self.__omega_baryon: float = omega_baryon
         self.__expansion_factor: float = expansion_factor
         self.__box_size: unyt_array = box_size
+        self.__is_snipshot: unyt_array = snipshot
 
         self.__n_parts: Dict[ParticleType, int] = self._get_number_of_particles()
         self.__n_parts_this_rank: Dict[ParticleType, int] = self._get_number_of_particles_this_rank()
@@ -77,6 +79,10 @@ class SnapshotBase(SimulationDataBase[T_ISimulation]):
     @property
     def box_size(self) -> unyt_array:
         return self.__box_size
+
+    @property
+    def snipshot(self) -> bool:
+        return self.__is_snipshot
 
     def remove_h_factor(self, data: np.ndarray) -> np.ndarray:
         return data / self.h
@@ -177,12 +183,28 @@ class SnapshotBase(SimulationDataBase[T_ISimulation]):
     def _get_metalicities(self, particle_type: ParticleType) -> unyt_array:
         raise NotImplementedError("Attempted to call an abstract method.")
 
+    def get_mean_enrichment_redshift(self, particle_type: ParticleType) -> unyt_array:
+        if particle_type != ParticleType.gas and particle_type != ParticleType.star:
+            raise ValueError("get_mean_enrichment_redshift is not supported for particle types other than gas and star.")
+        return self._get_mean_enrichment_redshift(particle_type)
+    @abstractmethod
+    def _get_mean_enrichment_redshift(self, particle_type: ParticleType) -> unyt_array:
+        raise NotImplementedError("Attempted to call an abstract method.")
+
     def get_densities(self, particle_type: ParticleType) -> unyt_array:
         if particle_type != ParticleType.gas and particle_type != ParticleType.star:
             raise ValueError("get_densities is not supported for particle types other than gas and star.")
         return self._get_densities(particle_type)
     @abstractmethod
     def _get_densities(self, particle_type: ParticleType) -> unyt_array:
+        raise NotImplementedError("Attempted to call an abstract method.")
+
+    def get_number_densities(self, particle_type: ParticleType, element: str) -> unyt_array:
+        if particle_type != ParticleType.gas and particle_type != ParticleType.star:
+            raise ValueError("get_number_densities is not supported for particle types other than gas and star.")
+        return self._get_number_densities(particle_type, element)
+    @abstractmethod
+    def _get_number_densities(self, particle_type: ParticleType, element: str) -> unyt_array:
         raise NotImplementedError("Attempted to call an abstract method.")
 
     def get_temperatures(self, particle_type: ParticleType) -> unyt_array:

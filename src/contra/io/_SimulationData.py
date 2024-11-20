@@ -130,3 +130,6 @@ class SimulationFileTreeBase(Generic[T_ISimulationData], ISimulationFileTree):
         raise NotImplementedError()
     def get_by_numbers(self, number: Iterable[str]) -> tuple[SimulationFileTreeLeafBase[T_ISimulationData], ...]:
         return tuple([self.get_by_number(n) for n in number])
+    @abstractmethod
+    def find_file_number_from_redshift(self, redshift: float) -> str:
+        raise NotImplementedError()

@@ -12,6 +12,9 @@ from collections.abc import Iterable, Iterator
 from typing import TypeVar, Generic
 from functools import singledispatchmethod
 
+import numpy as np
+from QuasarCode import Console
+
 
 
 class SnapOrSnipFiles_EAGLE(SimulationFileTreeLeafBase[SnapshotEAGLE]):
@@ -51,8 +54,11 @@ T = TypeVar("T", bound = SnapOrSnipFiles_EAGLE)
 class SimulationSnapOrSnipFiles_EAGLE(SimulationFileTreeBase[SnapshotEAGLE], Generic[T]):
     _snapshot_pattern = re.compile(r'.*snapshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]snap_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
     _snipshot_pattern = re.compile(r'.*snipshot_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]snip_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
-    def __init__(self, directory: str, snipshots: bool, file_type: type[T]):
+    def __init__(self, directory: str, snipshots: bool, file_type: type[T], skip_numbers: list[str]|None = None):
         super().__init__(directory)
+
+        if skip_numbers is None:
+            skip_numbers = []
 
         self.__file_type_string = "snapshot" if not snipshots else "snipshot"
 
@@ -65,6 +71,9 @@ class SimulationSnapOrSnipFiles_EAGLE(SimulationFileTreeBase[SnapshotEAGLE], Gen
                 match = pattern.match(os.path.join(root, filename))
                 if match:
                     number = match.group("number")
+                    if number in skip_numbers:
+                        continue
+
                     redshift_int = match.group("redshift_int")
                     redshift_dec = match.group("redshift_dec")
                     parallel_index = int(match.group("parallel_index"))
@@ -123,6 +132,18 @@ class SimulationSnapOrSnipFiles_EAGLE(SimulationFileTreeBase[SnapshotEAGLE], Gen
         if tag not in self.__file_lookup_by_tag:
             raise KeyError(f"{self.__file_type_string.title()} tag \"{tag}\" not avalible.")
         return self.__file_lookup_by_tag[tag]
+    
+    def find_file_number_from_redshift(self, redshift: float) -> str:
+        file_numbers = np.array(self.get_numbers(), dtype = str)
+        file_numbers = file_numbers[np.array([float(v) for v in file_numbers], dtype = float).argsort()]
+        file_redshifts = np.array([self.get_by_number(file_number).tag_redshift for file_number in file_numbers], dtype = float)
+        prior_files_mask = file_redshifts >= redshift
+        if prior_files_mask.sum() == 0:
+            raise FileNotFoundError(f"Unable to find search data for a file with a redshift of (or exceding) {redshift}.\nThe first file has a redshift of {file_redshifts[0]}.")
+        selected_redshift = file_redshifts[prior_files_mask][-1]
+        if redshift >= 1.0 and redshift - selected_redshift > 0.5 or redshift < 1.0 and redshift - selected_redshift > 0.1:
+            Console.print_verbose_warning(f"Attempted to find data at z={redshift} but only managed to retrive data for z=~{selected_redshift}.")
+        return str(file_numbers[prior_files_mask][-1])
 
 
 
@@ -130,11 +151,12 @@ class SnapshotFiles_EAGLE(SnapOrSnipFiles_EAGLE):
     pass
 
 class SimulationSnapshotFiles_EAGLE(SimulationSnapOrSnipFiles_EAGLE[SnapshotFiles_EAGLE]):
-    def __init__(self, directory: str):
+    def __init__(self, directory: str, skip_numbers: list[str]|None = None):
         super().__init__(
             directory,
             snipshots = False,
-            file_type = SnapshotFiles_EAGLE
+            file_type = SnapshotFiles_EAGLE,
+            skip_numbers = skip_numbers
         )
 
     def __iter__(self) -> Iterator[SnapshotFiles_EAGLE]:
@@ -146,11 +168,12 @@ class SnipshotFiles_EAGLE(SnapOrSnipFiles_EAGLE):
     pass
 
 class SimulationSnipshotFiles_EAGLE(SimulationSnapOrSnipFiles_EAGLE[SnipshotFiles_EAGLE]):
-    def __init__(self, directory: str):
+    def __init__(self, directory: str, skip_numbers: list[str]|None = None):
         super().__init__(
             directory,
             snipshots = True,
-            file_type = SnipshotFiles_EAGLE
+            file_type = SnipshotFiles_EAGLE,
+            skip_numbers = skip_numbers
         )
 
     def __iter__(self) -> Iterator[SnipshotFiles_EAGLE]:
@@ -210,8 +233,11 @@ class SimulationSnapOrSnipCatalogueFiles_EAGLE(SimulationFileTreeBase[CatalogueS
     _snipshot_catalogue_membership_pattern = re.compile(r'.*particledata_snip_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]eagle_subfind_snip_particles_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
     _snapshot_catalogue_properties_pattern = re.compile(r'.*groups_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]eagle_subfind_tab_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
     _snipshot_catalogue_properties_pattern = re.compile(r'.*groups_snip_(?P<number>\d{3})_z(?P<redshift_int>\d+)p(?P<redshift_dec>\d+)[\\/]eagle_subfind_snip_tab_(?P=number)_z(?P=redshift_int)p(?P=redshift_dec)\.(?P<parallel_index>\d+)\.(?P<extension>\w+)$')
-    def __init__(self, directory: str, snipshots: bool, file_type: type[U], raw_particle_data_info: SimulationSnapOrSnipFiles_EAGLE[T]):
+    def __init__(self, directory: str, snipshots: bool, file_type: type[U], raw_particle_data_info: SimulationSnapOrSnipFiles_EAGLE[T], skip_numbers: list[str]|None = None):
         super().__init__(directory)
+
+        if skip_numbers is None:
+            skip_numbers = []
 
         self.__file_type_string = "snapshot catalogue" if not snipshots else "snipshot catalogue"
 
@@ -232,6 +258,9 @@ class SimulationSnapOrSnipCatalogueFiles_EAGLE(SimulationFileTreeBase[CatalogueS
                     is_properties = bool(properties_match)
 
                     number = match.group("number")
+                    if number in skip_numbers:
+                        continue
+
                     redshift_int = match.group("redshift_int")
                     redshift_dec = match.group("redshift_dec")
                     parallel_index = int(match.group("parallel_index"))
@@ -307,6 +336,18 @@ class SimulationSnapOrSnipCatalogueFiles_EAGLE(SimulationFileTreeBase[CatalogueS
         if tag not in self.__file_lookup_by_tag:
             raise KeyError(f"{self.__file_type_string.title()} tag \"{tag}\" not avalible.")
         return self.__file_lookup_by_tag[tag]
+    
+    def find_file_number_from_redshift(self, redshift: float) -> str:
+        file_numbers = np.array(self.get_numbers(), dtype = str)
+        file_numbers = file_numbers[np.array([float(v) for v in file_numbers], dtype = float).argsort()]
+        file_redshifts = np.array([self.get_by_number(file_number).redshift for file_number in file_numbers], dtype = float)
+        prior_files_mask = file_redshifts >= redshift
+        if prior_files_mask.sum() == 0:
+            raise FileNotFoundError(f"Unable to find search data for a file with a redshift of (or exceding) {redshift}.\nThe first file has a redshift of {file_redshifts[0]}.")
+        selected_redshift = file_redshifts[prior_files_mask][-1]
+        if redshift >= 1.0 and redshift - selected_redshift > 0.5 or redshift < 1.0 and redshift - selected_redshift > 0.1:
+            Console.print_verbose_warning(f"Attempted to find data at z={redshift} but only managed to retrive data for z=~{selected_redshift}.")
+        return str(file_numbers[prior_files_mask][-1])
 
 
 
@@ -314,12 +355,13 @@ class SnapshotCatalogueFiles_EAGLE(SnapOrSnipCatalogueFiles_EAGLE):
     pass
 
 class SimulationSnapshotCatalogueFiles_EAGLE(SimulationSnapOrSnipCatalogueFiles_EAGLE[SnapshotCatalogueFiles_EAGLE, SnapshotFiles_EAGLE]):
-    def __init__(self, directory: str, snapshot_info: SimulationSnapshotFiles_EAGLE):
+    def __init__(self, directory: str, snapshot_info: SimulationSnapshotFiles_EAGLE, skip_numbers: list[str]|None = None):
         super().__init__(
             directory,
             snipshots = False,
             file_type = SnapshotCatalogueFiles_EAGLE,
-            raw_particle_data_info = snapshot_info
+            raw_particle_data_info = snapshot_info,
+            skip_numbers = skip_numbers
         )
 
     def __iter__(self) -> Iterator[SnapshotCatalogueFiles_EAGLE]:
@@ -331,12 +373,13 @@ class SnipshotCatalogueFiles_EAGLE(SnapOrSnipCatalogueFiles_EAGLE):
     pass
 
 class SimulationSnipshotCatalogueFiles_EAGLE(SimulationSnapOrSnipCatalogueFiles_EAGLE[SnipshotCatalogueFiles_EAGLE, SnipshotFiles_EAGLE]):
-    def __init__(self, directory: str, snipshot_info: SimulationSnipshotFiles_EAGLE):
+    def __init__(self, directory: str, snipshot_info: SimulationSnipshotFiles_EAGLE, skip_numbers: list[str]|None = None):
         super().__init__(
             directory,
             snipshots = True,
             file_type = SnipshotCatalogueFiles_EAGLE,
-            raw_particle_data_info = snipshot_info
+            raw_particle_data_info = snipshot_info,
+            skip_numbers = skip_numbers
         )
 
     def __iter__(self) -> Iterator[SnipshotCatalogueFiles_EAGLE]:
@@ -345,12 +388,12 @@ class SimulationSnipshotCatalogueFiles_EAGLE(SimulationSnapOrSnipCatalogueFiles_
 
 
 class FileTreeScraper_EAGLE(object):
-    def __init__(self, filepath: str) -> None:
+    def __init__(self, filepath: str, skip_snapshot_numbers: list[str]|None = None, skip_snipshot_numbers: list[str]|None = None) -> None:
         self.__root_directory = filepath
-        self.__snapshots = SimulationSnapshotFiles_EAGLE(filepath)
-        self.__snipshots = SimulationSnipshotFiles_EAGLE(filepath)
-        self.__snapshot_catalogues = SimulationSnapshotCatalogueFiles_EAGLE(filepath, self.__snapshots)
-        self.__snipshot_catalogues = SimulationSnipshotCatalogueFiles_EAGLE(filepath, self.__snipshots)
+        self.__snapshots = SimulationSnapshotFiles_EAGLE(filepath, skip_numbers = skip_snapshot_numbers)
+        self.__snipshots = SimulationSnipshotFiles_EAGLE(filepath, skip_numbers = skip_snipshot_numbers)
+        self.__snapshot_catalogues = SimulationSnapshotCatalogueFiles_EAGLE(filepath, self.__snapshots, skip_numbers = skip_snapshot_numbers)
+        self.__snipshot_catalogues = SimulationSnipshotCatalogueFiles_EAGLE(filepath, self.__snipshots, skip_numbers = skip_snipshot_numbers)
 
     @property
     def snapshots(self) -> SimulationSnapshotFiles_EAGLE:
