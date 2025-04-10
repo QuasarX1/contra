@@ -16,16 +16,22 @@ from QuasarCode.Data import VersionInfomation
 from QuasarCode.Tools import Struct, TypedAutoProperty, NullableTypedAutoProperty, TypeShield, NestedTypeShield
 from QuasarCode.MPI import MPI_Config, mpi_barrier, mpi_get_slice
 
-from .._ArrayReorder import ArrayReorder
-from .._ParticleType import ParticleType
-from ._EAGLE import FileTreeScraper_EAGLE
-#from ._SWIFT import FileTreeScraper_SWIFT#TODO:
-from ._SnapshotBase import SnapshotBase
-from ._SnapshotSWIFT import SnapshotSWIFT
-from ._SnapshotEAGLE import SnapshotEAGLE
-from ._CatalogueBase import CatalogueBase
-from ._CatalogueSOAP import CatalogueSOAP
-from ._CatalogueSUBFIND import CatalogueSUBFIND
+#from .._ArrayReorder import ArrayReorder
+#from .._ParticleType import ParticleType
+#from ._EAGLE import FileTreeScraper_EAGLE
+##from ._SWIFT import FileTreeScraper_SWIFT#TODO:
+#from ._SnapshotBase import SnapshotBase
+#from ._SnapshotSWIFT import SnapshotSWIFT
+#from ._SnapshotEAGLE import SnapshotEAGLE
+#from ._CatalogueBase import CatalogueBase
+#from ._CatalogueSOAP import CatalogueSOAP
+#from ._CatalogueSUBFIND import CatalogueSUBFIND
+
+from astro_sph_tools.tools import ArrayReorder
+from astro_sph_tools import ParticleType
+from astro_sph_tools.io.data_structures import SnapshotBase, CatalogueBase
+from astro_sph_tools.io.EAGLE import FileTreeScraper_EAGLE, SnapshotEAGLE, CatalogueSUBFIND
+#from astro_sph_tools.io.SWIFT import FileTreeScraper_SWIFT, SnapshotSWIFT, CatalogueSOAP
 
 #os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
@@ -176,7 +182,7 @@ class ParticleTypeDataset(Struct):#TODO: data is only float/int 32 bit precision
 
     halo_masses
 
-    halo_masses_scaled
+    (REMOVED) halo_masses_scaled
 
     locations_pre_ejection
     """
@@ -197,8 +203,8 @@ class ParticleTypeDataset(Struct):#TODO: data is only float/int 32 bit precision
                 doc = "ID of last halo.")
     halo_masses = TypedAutoProperty[Collection[float]](NestedTypeShield(np.ndarray, np.float64),#TODO: make unyt
                 doc = "Mass of last halo.")
-    halo_masses_scaled = TypedAutoProperty[Collection[float]](NestedTypeShield(np.ndarray, np.float64),
-                doc = "Mass of last halo as a fraction of the L_* mass at that redshift.")
+#    halo_masses_scaled = TypedAutoProperty[Collection[float]](NestedTypeShield(np.ndarray, np.float64),
+#                doc = "Mass of last halo as a fraction of the L_* mass at that redshift.")
     positions_pre_ejection = TypedAutoProperty[Collection[Collection[float]]](NestedTypeShield(np.ndarray, np.ndarray, np.float64),#TODO: make unyt
                 doc = "Particle coordinates prior to final ejection.")
 
@@ -237,7 +243,7 @@ class ParticleTypeDataset(Struct):#TODO: data is only float/int 32 bit precision
         data.redshifts              = d["HaloRedshift"][data_slice]
         data.halo_ids               = d["HaloID"][data_slice]
         data.halo_masses            = d["HaloMass"][data_slice]
-        data.halo_masses_scaled     = d["RelitiveHaloMass"][data_slice]
+#        data.halo_masses_scaled     = d["RelitiveHaloMass"][data_slice]
         data.positions_pre_ejection = d["PositionPreEjection"][data_slice]
         data.length                 = d["HaloID"].shape[0]
         data.length_this_rank       = data.halo_ids.shape[0]
@@ -276,7 +282,7 @@ class ParticleTypeDataset(Struct):#TODO: data is only float/int 32 bit precision
             d.create_dataset(name = "HaloRedshift",        shape = (group_length,),   dtype = data.redshifts.dtype,              compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.redshifts
             d.create_dataset(name = "HaloID",              shape = (group_length,),   dtype = data.halo_ids.dtype,               compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.halo_ids
             d.create_dataset(name = "HaloMass",            shape = (group_length,),   dtype = data.halo_masses.dtype,            compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.halo_masses
-            d.create_dataset(name = "RelitiveHaloMass",    shape = (group_length,),   dtype = data.halo_masses_scaled.dtype,     compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.halo_masses_scaled
+#            d.create_dataset(name = "RelitiveHaloMass",    shape = (group_length,),   dtype = data.halo_masses_scaled.dtype,     compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)[rank_slice] = data.halo_masses_scaled
             d.create_dataset(name = "PositionPreEjection", shape = (group_length, 3), dtype = data.positions_pre_ejection.dtype, compression = "gzip", compression_opts = 8, chunks=(1024*8, 3), shuffle = True, fletcher32 = True)[rank_slice] = data.positions_pre_ejection
             mpi_barrier()
 
@@ -290,7 +296,7 @@ class ParticleTypeDataset(Struct):#TODO: data is only float/int 32 bit precision
             d.create_dataset(name = "HaloRedshift",        data = data.redshifts,              compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
             d.create_dataset(name = "HaloID",              data = data.halo_ids,               compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
             d.create_dataset(name = "HaloMass",            data = data.halo_masses,            compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
-            d.create_dataset(name = "RelitiveHaloMass",    data = data.halo_masses_scaled,     compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
+#            d.create_dataset(name = "RelitiveHaloMass",    data = data.halo_masses_scaled,     compression = "gzip", compression_opts = 8, chunks=(1024*8,  ), shuffle = True, fletcher32 = True)
             d.create_dataset(name = "PositionPreEjection", data = data.positions_pre_ejection, compression = "gzip", compression_opts = 8, chunks=(1024*8, 3), shuffle = True, fletcher32 = True)
 
         return d
@@ -1403,7 +1409,7 @@ class DistributedOutputReader(object):
             result.redshifts              = np.concatenate([r.redshifts for r in results])
             result.halo_ids               = np.concatenate([r.halo_ids for r in results])
             result.halo_masses            = np.concatenate([r.halo_masses for r in results])
-            result.halo_masses_scaled     = np.concatenate([r.halo_masses_scaled for r in results])
+#            result.halo_masses_scaled     = np.concatenate([r.halo_masses_scaled for r in results])
             result.positions_pre_ejection = np.concatenate([r.positions_pre_ejection for r in results])
             result.length                 = result.halo_ids.shape[0]
             result.length_this_rank       = result.halo_ids.shape[0]
@@ -1448,7 +1454,7 @@ class DistributedOutputReader(object):
             result.redshifts              = np.concatenate([r.redshifts for r in results])
             result.halo_ids               = np.concatenate([r.halo_ids for r in results])
             result.halo_masses            = np.concatenate([r.halo_masses for r in results])
-            result.halo_masses_scaled     = np.concatenate([r.halo_masses_scaled for r in results])
+#            result.halo_masses_scaled     = np.concatenate([r.halo_masses_scaled for r in results])
             result.positions_pre_ejection = np.concatenate([r.positions_pre_ejection for r in results])
             result.length                 = result.halo_ids.shape[0]
             result.length_this_rank       = result.halo_ids.shape[0]

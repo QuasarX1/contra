@@ -1,6 +1,13 @@
 # SPDX-FileCopyrightText: 2024-present Christopher Rowe <chris.rowe19@outlook.com>
 #
 # SPDX-License-Identifier: None
+from astro_sph_tools.tools._ArrayReorder import *
+
+
+
+
+
+'''
 from typing import cast, Any, Union, Callable
 from functools import singledispatchmethod
 
@@ -10,6 +17,7 @@ from QuasarCode import Console
 from QuasarCode.MPI import MPI_Config, mpi_barrier, synchronyse, mpi_gather_array, mpi_scatter_array
 
 import hashlib#TODO: remove
+import gc
 
 from numba import njit
 @njit
@@ -109,6 +117,30 @@ class ArrayReorder_MPI_2(object):
         
         self.__reverse: "ArrayReorder_MPI_2"
 
+    def __del__(self):
+        try:
+            del self.__data_reorder_on_root
+        except: pass
+        try:
+            del self.__source_mask
+        except: pass
+        try:
+            del self.__target_mask
+        except: pass
+        try:
+            del self.__input_length
+        except: pass
+        try:
+            del self.__output_length
+        except: pass
+        try:
+            del self.__returned_data_length
+        except: pass
+        try:
+            del self.__reverse
+        except: pass
+        gc.collect()
+
     def __set_reverse(self, reverse_object: "ArrayReorder_MPI_2") -> None:
         self.__reverse = reverse_object
 
@@ -156,6 +188,10 @@ class ArrayReorder_MPI_2(object):
             reordered_data = self.__data_reorder_on_root(gathered_data)
 
         output_array[self.__target_mask] = mpi_scatter_array(reordered_data, elements_this_rank = self.__returned_data_length)
+
+        if MPI_Config.is_root:
+            del reordered_data
+            gc.collect()
 
         return output_array
     
@@ -1139,3 +1175,4 @@ class ArrayMapping(object):
             source_ID_filter = source_ID_filter,
             target_ID_filter = target_ID_filter
         )
+'''

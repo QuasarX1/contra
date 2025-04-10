@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: None
 import multiprocessing.managers
-from .. import VERSION, ParticleType, SharedArray, SharedArray_TransmissionData
-from ..io import SnapshotEAGLE, CatalogueSUBFIND, FileTreeScraper_EAGLE, SimulationSnapshotFiles_EAGLE, SimulationSnipshotFiles_EAGLE, SimulationSnapshotCatalogueFiles_EAGLE, SimulationSnipshotCatalogueFiles_EAGLE
+from .. import VERSION, SharedArray, SharedArray_TransmissionData
 
 import datetime
 import os
@@ -18,6 +17,9 @@ import h5py as h5
 from QuasarCode import Settings, Console
 from QuasarCode.Data import VersionInfomation
 from QuasarCode.Tools import ScriptWrapper
+
+from astro_sph_tools import ParticleType
+from astro_sph_tools.io.EAGLE import SnapshotEAGLE, CatalogueSUBFIND, FileTreeScraper_EAGLE, SimulationSnapshotFiles_EAGLE, SimulationSnipshotFiles_EAGLE, SimulationSnapshotCatalogueFiles_EAGLE, SimulationSnipshotCatalogueFiles_EAGLE
 
 
 

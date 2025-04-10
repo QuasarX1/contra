@@ -1,6 +1,12 @@
 # SPDX-FileCopyrightText: 2024-present Christopher Rowe <chris.rowe19@outlook.com>
 #
 # SPDX-License-Identifier: None
+from astro_sph_tools import ParticleType
+
+
+
+
+'''
 from enum import Enum
 from typing import Tuple
 
@@ -33,3 +39,4 @@ class ParticleType(Enum):
             else "stars"        if self == ParticleType.star
             else "black_holes"
         )
+'''

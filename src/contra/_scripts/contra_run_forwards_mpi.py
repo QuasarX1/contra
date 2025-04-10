@@ -1,26 +1,39 @@
 # SPDX-FileCopyrightText: 2024-present Christopher Rowe <chris.rowe19@outlook.com>
 #
 # SPDX-License-Identifier: None
-from .. import VERSION, Stopwatch, ParticleType, ArrayReorder, ArrayReorder_2, ArrayReorder_MPI, ArrayReorder_MPI_2, ArrayMapping, SharedArray, SharedArray_TransmissionData, SharedArray_Shepherd, SharedArray_ParallelJob
-from .._L_star import get_L_star_halo_mass_of_z
-from ..io import SnapshotBase, SnapshotEAGLE, FileTreeScraper_EAGLE, SnapshotSWIFT, CatalogueBase, CatalogueSUBFIND, CatalogueSOAP#, OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, CheckpointData
-#from ..io._Output_Objects__forwards import OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset
-from ..io._Output_Objects import OutputWriter, OutputReader, DistributedOutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset
 
 import datetime
 import os
-from typing import cast, Union, List, Tuple, Dict, Generic, TypeVar
+from typing import cast, Union, Generic, TypeVar
 from collections.abc import Callable, Iterable
 import asyncio
 
 import numpy as np
 from unyt import unyt_quantity, unyt_array
-from QuasarCode import Settings, Console
-from QuasarCode.MPI import MPI_Config, mpi_barrier, synchronyse, mpi_get_slice, mpi_gather_array
+from QuasarCode import Settings, Console, Stopwatch
+from QuasarCode.MPI import MPI_Config, mpi_barrier, synchronyse, mpi_get_slice, mpi_gather_array, mpi_scatter_array
 from QuasarCode.Data import VersionInfomation
 from QuasarCode.Tools import ScriptWrapper
 
+from astro_sph_tools import ParticleType
+from astro_sph_tools.io.data_structures import SnapshotBase, CatalogueBase
+from astro_sph_tools.tools import ArrayReorder_MPI_2
+from astro_sph_tools.io.EAGLE import FileTreeScraper_EAGLE, SnapshotEAGLE, CatalogueSUBFIND
+
+from .. import VERSION, SharedArray, SharedArray_TransmissionData, SharedArray_Shepherd, SharedArray_ParallelJob
+from .._L_star import get_L_star_halo_mass_of_z
+from ..io import SnapshotSWIFT, CatalogueSOAP#, OutputWriter, OutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset, CheckpointData
+from ..io._Output_Objects import OutputWriter, OutputReader, DistributedOutputReader, HeaderDataset, ParticleTypeDataset, SnapshotStatsDataset
+
+import gc
+
 Console.mpi_output_root_rank_only()
+Console.show_times()
+
+USE_DEBUGGING_CHECKS = False
+
+#SnapshotEAGLE.set_pyread_eagle_to_verbose()
+CatalogueSUBFIND.LimitedMode = True # This is to stop unnecessary IO when using the large datasets from slowing the whole process down!
 
 
 
@@ -29,7 +42,7 @@ def main():
         command = "contra-run-complete",
         authors = [ScriptWrapper.AuthorInfomation()],
         version = ScriptWrapper.VersionInfomation.from_string("1.0.0"),
-        edit_date = datetime.date(2024, 8, 31),
+        edit_date = datetime.date(2025, 2, 10),
         description = "Itterate forwards in time through the snapshots and record the properties of the last halo a particle encountered for each snapshot.",
         parameters = ScriptWrapper.ParamSpec(
             ScriptWrapper.OptionalParam[str](
@@ -50,22 +63,47 @@ def main():
             ),
             ScriptWrapper.OptionalParam[str | None](
                 name = "catalogue-membership-basename",
-                description = "Prefix to apply to all catalogue membership file names.\nOnly required if the methof of auto-resolving the filenames fails."
+                description = "Prefix to apply to all catalogue membership file names.\nOnly required if the method of auto-resolving the filenames fails."
             ),
             ScriptWrapper.OptionalParam[str | None](
                 name = "catalogue-properties-basename",
-                description = "Prefix to apply to all catalogue properties file names.\nOnly required if the methof of auto-resolving the filenames fails."
+                description = "Prefix to apply to all catalogue properties file names.\nOnly required if the method of auto-resolving the filenames fails."
             ),
             ScriptWrapper.OptionalParam[list[str]](
                 name = "skip-files",
                 sets_param = "skip_file_numbers",
                 conversion_function = ScriptWrapper.make_list_converter(","),
                 default_value = [],
-                description = "Prefix to apply to all catalogue properties file names.\nOnly required if the methof of auto-resolving the filenames fails."
+                description = "Numbers of file numbers to skip (of the snapshot or snipshot type being targeted)."
+            ),
+            ScriptWrapper.OptionalParam[list[str]](
+                name = "skip-snapshot-files",
+                sets_param = "skip_snapshot_numbers",
+                conversion_function = ScriptWrapper.make_list_converter(","),
+                default_value = [],
+                description = "Snapshot file numbers to exclude when finding data.\nUse this to mask out any corrupted or missing snapshots."
+            ),
+            ScriptWrapper.OptionalParam[list[str]](
+                name = "skip-snipshot-files",
+                sets_param = "skip_snipshot_numbers",
+                conversion_function = ScriptWrapper.make_list_converter(","),
+                default_value = [],
+                description = "Snipshot file numbers to exclude when finding data.\nUse this to mask out any corrupted or missing snipshots."
             ),
             ScriptWrapper.Flag(
                 name = "use-snipshots",
-                description = "Set this flag to use shipshot files instead of snapshots."
+                description = "Set this flag to use snipshot files instead of snapshots."
+            ),
+            ScriptWrapper.OptionalParam[str|None](
+                name = "start-file",
+                description = "Number of file to start from if not the first file.\nIncompatible with --start-file.",
+                conflicts = ["start-redshift"]
+            ),
+            ScriptWrapper.OptionalParam[float|None](
+                name = "start-redshift",
+                description = "Redshift to start from if not the first file.\nThis will use the last file with a redshift at or exceeding this value.\nIncompatible with --start-file.",
+                conversion_function = float,
+                conflicts = ["start-file"]
             ),
             ScriptWrapper.Flag(
                 name = "EAGLE",
@@ -132,7 +170,11 @@ async def __main(
             catalogue_membership_basename: Union[str, None],
             catalogue_properties_basename: Union[str, None],
             skip_file_numbers: list[str],
+            skip_snapshot_numbers: list[str],
+            skip_snipshot_numbers: list[str],
             use_snipshots: bool,
+            start_file: str|None,
+            start_redshift: float|None,
             is_EAGLE: bool,
             is_SWIFT: bool,
             do_gas: bool,
@@ -152,6 +194,24 @@ async def __main(
         raise ModuleNotFoundError("Unable to find support for MPI.")
     Console.print_info(f"Running with MPI on {MPI_Config.comm_size} ranks.")
     Console.print_debug(f"Root MPI rank is {MPI_Config.root}.")
+
+    if skip_file_numbers is not None:
+        if not use_snipshots:
+            if skip_snapshot_numbers is not None:
+                skip_snapshot_numbers.extend(skip_file_numbers)
+                skip_file_numbers = skip_snapshot_numbers
+            else:
+                skip_snapshot_numbers = skip_file_numbers
+        else:
+            if skip_snipshot_numbers is not None:
+                skip_snipshot_numbers.extend(skip_file_numbers)
+                skip_file_numbers = skip_snipshot_numbers
+            else:
+                skip_snipshot_numbers = skip_file_numbers
+    elif not use_snipshots:
+        skip_file_numbers = skip_snapshot_numbers
+    else:
+        skip_file_numbers = skip_snipshot_numbers
 
     # Validate sim type
     if not (is_EAGLE or is_SWIFT):
@@ -189,8 +249,22 @@ async def __main(
     snapshot_directory = os.path.abspath(snapshot_directory)
 
     # Get snapshot file information
-    simulation_file_scraper = FileTreeScraper_EAGLE(snapshot_directory, skip_snapshot_numbers = skip_file_numbers if not use_snipshots else None, skip_snipshot_numbers = skip_file_numbers if use_snipshots else None)# if is_EAGLE else FileTreeScraper_SWIFT(snapshot_directory, skip_snapshot_numbers = skip_file_numbers)
+    simulation_file_scraper = FileTreeScraper_EAGLE(
+        snapshot_directory,
+        skip_snapshot_numbers = skip_snapshot_numbers,
+        skip_snipshot_numbers = skip_snipshot_numbers
+    )# if is_EAGLE else FileTreeScraper_SWIFT(snapshot_directory, skip_snapshot_numbers = skip_file_numbers)
     N_snapshots = len(simulation_file_scraper.snipshots if use_snipshots else simulation_file_scraper.snapshots)
+
+    # Check for start file
+    if start_file is not None:
+        if start_file not in (simulation_file_scraper.snipshots if use_snipshots else simulation_file_scraper.snapshots).get_numbers():
+            Console.print_debug((simulation_file_scraper.snipshots if use_snipshots else simulation_file_scraper.snapshots).get_numbers())
+            Console.print_error(f"Unable to find a sn{'i' if use_snipshots else 'a'}pshot with a number matching \"{start_file}\".")
+            return
+    elif start_redshift is not None:
+        start_file = (simulation_file_scraper.snipshots if use_snipshots else simulation_file_scraper.snapshots).find_file_number_from_redshift(start_redshift)
+        Console.print_info(f"Found file number {start_file} for start redshift {start_redshift}.")
 
     # Ensure that the path is an absolute path
     output_filepath = os.path.abspath(output_filepath)
@@ -225,17 +299,16 @@ async def __main(
     shapshot_particle_ids:                  np.ndarray|None = None
     snapshot_last_halo_ids:                 np.ndarray|None = None
     snapshot_last_halo_masses:              np.ndarray|None = None
-    snapshot_last_halo_masses_scaled:       np.ndarray|None = None
+#    snapshot_last_halo_masses_scaled:       np.ndarray|None = None
     snapshot_last_halo_redshifts:           np.ndarray|None = None
     snapshot_last_halo_particle_positions:  np.ndarray|None = None
 
+    write_header: bool = not restart
     if restart:
         # It is possible to have blank files created but not populated with a header due to an error.
         # Check that a header can be read and if not, write the header.
-        write_header: bool
         wrong_number_of_files: bool
         if MPI_Config.is_root:
-            write_header = not restart
             wrong_number_of_files = False
             try:
                 with DistributedOutputReader(output_filepath, map_to_mpi = True) as output_file_reader:
@@ -285,14 +358,20 @@ async def __main(
         # Check that a header can be read and if not, raise an error and terminate.
         pass
 
+    Console.print_debug("Waiting at MPI barrier.")
     mpi_barrier()
+    Console.print_debug("Continuing...")
 
     # Initialise the search dispatcher object
     # This allows the search to be parallelised on the current rank over haloes with one halo per subprocess
-    searcher = SnapshotSearcher(64, SnapshotEAGLE, CatalogueSUBFIND, lambda _: 1.0) if is_EAGLE else SnapshotSearcher(64, SnapshotSWIFT, CatalogueSOAP, lambda _: 1.0)
+    searcher = SnapshotSearcher(64, SnapshotEAGLE, CatalogueSUBFIND) if is_EAGLE else SnapshotSearcher(64, SnapshotSWIFT, CatalogueSOAP)
 
     # Itterate over selected particle types
     for particle_type in particle_types:
+
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
 
         Console.print_info(f"Running search for {particle_type.name} particles.")
 
@@ -314,7 +393,7 @@ async def __main(
 
                 snapshot_last_halo_ids = checkpoint.halo_ids
                 snapshot_last_halo_masses = checkpoint.halo_masses
-                snapshot_last_halo_masses_scaled = checkpoint.halo_masses_scaled
+#                snapshot_last_halo_masses_scaled = checkpoint.halo_masses_scaled
                 snapshot_last_halo_redshifts = checkpoint.redshifts
                 snapshot_last_halo_particle_positions = checkpoint.positions_pre_ejection
 
@@ -330,38 +409,95 @@ async def __main(
                 last_completed_numerical_file_number = -1
                 Console.print_raw("failed - no data to restart from.")
 
-#        stopwatch = Stopwatch("Search", show_time_since_lap = True)
+            Console.print_debug("Waiting at MPI barrier.")
+            mpi_barrier()
+            Console.print_debug("Continuing...")
 
-        for count, catalogue_info in enumerate(simulation_file_scraper.snipshot_catalogues if use_snipshots else simulation_file_scraper.catalogues):
-#            if count > 14:
-#                break
+#        with Stopwatch("Search") as stopwatch:
+#            barrier_time = stopwatch.get_elapsed_time_lap()
+#            mpi_barrier()
+#            all_barrier_times = MPI_Config.comm.gather(barrier_time, root = MPI_Config.root)
+#            if MPI_Config.is_root:
+#                Console.print_debug("Search barrier delay:", ", ".join([f"{v - min(all_barrier_times):.1f}" for v in all_barrier_times]))
+
+        start_index: int
+        if start_file is not None:
+            start_index = (simulation_file_scraper.snipshot_catalogues if use_snipshots else simulation_file_scraper.catalogues).get_numbers().index(start_file)
+        else:
+            start_index = 0
+
+        aggregate_times = { "IO" : 0.0, "COMPUTE" : 0.0, "CONSTRUCTION" : 0.0, "DEAD" : 0.0, None : 0.0 }
+
+        for catalogue_info in (simulation_file_scraper.snipshot_catalogues if use_snipshots else simulation_file_scraper.catalogues)[start_index:]:
+
+            # Timing recording
+            stopwatch = Stopwatch.start_new("Search")
+            time_labels: list[str] = []
+            time_categories: list[str] = [] # "IO" | "COMPUTE" | "CONSTRUCTION" | "DEAD" | None
+            start_times: list[float] = []
+            end_times: list[float] = []
+            def t_start(label, io = False, compute = False, construction = False, dead = False):
+                time_labels.append(label)
+                time_categories.append("IO" if io else "COMPUTE" if compute else "CONSTRUCTION" if construction else "DEAD" if dead else None)
+                start_times.append(stopwatch.get_elapsed_time())
+            def t_end():
+                end_times.append(stopwatch.get_elapsed_time())
+
+#                barrier_time = stopwatch.get_elapsed_time_lap()
+#                mpi_barrier()
+#                all_barrier_times = MPI_Config.comm.gather(barrier_time, root = MPI_Config.root)
+#                if MPI_Config.is_root:
+#                    Console.print_debug("Search barrier delay:", ", ".join([f"{v - min(all_barrier_times):.1f}" for v in all_barrier_times]))
 
             if restart and catalogue_info.number_numerical <= last_completed_numerical_file_number:
                 Console.print_info(f"{catalogue_info.number} already complete. Skipping." if not is_EAGLE else f"{catalogue_info.number} (redshift {catalogue_info.tag_redshift}) already complete. Skipping.")
+                del stopwatch
                 continue
             Console.print_info(f"Doing {catalogue_info.number}" if not is_EAGLE else f"Doing {catalogue_info.number} (redshift {catalogue_info.tag_redshift})")
 
+            t_start("Dead time before loading IO objects", dead = True)
+            Console.print_debug("Waiting at MPI barrier.")
+            mpi_barrier()
+            Console.print_debug("Continuing...")
+            t_end()
+
             Console.print_verbose_info("    Loading Snapshot and catalogue objects.")
 
+            t_start("Loading custom IO helper objects.", construction = True)
             catalogue = catalogue_info.load()
             snapshot = catalogue.snapshot
+            t_end()
+
+            t_start("Dead time after loading IO objects", dead = True)
+            Console.print_debug("Waiting at MPI barrier.")
+            mpi_barrier()
+            Console.print_debug("Continuing...")
+            t_end()
+            t_start("")
 
             if not is_EAGLE:
                 Console.print_info(f"    Redshift {catalogue.redshift}")
             if len(catalogue) == 0:
                 Console.print_info("    No halos. Skipping.")
+                del stopwatch
                 continue
             Console.print_info(f"    Catalogue has {len(catalogue)} haloes.")
 
-            mpi_barrier()
+#                barrier_time = stopwatch.get_elapsed_time_lap()
+#                mpi_barrier()
+#                all_barrier_times = MPI_Config.comm.gather(barrier_time, root = MPI_Config.root)
+#                if MPI_Config.is_root:
+#                    Console.print_debug("Search barrier delay:", ", ".join([f"{v - min(all_barrier_times):.1f}" for v in all_barrier_times]))
 
-            Console.print_verbose_info("    Seaching for halo membership.")
+            Console.print_info("    Searching for halo membership.")
+            t_end()
+            t_start("Calling searcher")
 
             (
                 shapshot_particle_ids,
                 snapshot_last_halo_ids,
                 snapshot_last_halo_masses,
-                snapshot_last_halo_masses_scaled,
+#                snapshot_last_halo_masses_scaled,
                 snapshot_last_halo_redshifts,
                 snapshot_last_halo_particle_positions
             ) = searcher(
@@ -370,15 +506,25 @@ async def __main(
                 shapshot_particle_ids,
                 snapshot_last_halo_ids,
                 snapshot_last_halo_masses,
-                snapshot_last_halo_masses_scaled,
+#                snapshot_last_halo_masses_scaled,
                 snapshot_last_halo_redshifts,
-                snapshot_last_halo_particle_positions
+                snapshot_last_halo_particle_positions,
+                t_start, t_end
             )
 
-            mpi_barrier()
+            t_end()
+            t_start("")
+
+#                barrier_time = stopwatch.get_elapsed_time_lap()
+#                mpi_barrier()
+#                all_barrier_times = MPI_Config.comm.gather(barrier_time, root = MPI_Config.root)
+#                if MPI_Config.is_root:
+#                    Console.print_debug("Search barrier delay:", ", ".join([f"{v - min(all_barrier_times):.1f}" for v in all_barrier_times]))
 
             Console.print_verbose_info("    Creating output struct.")
+            t_end()
 
+            t_start("Creating writer struct", construction = True)
             results = ParticleTypeDataset(
                 particle_type = particle_type,
                 target_redshift = catalogue.redshift,
@@ -388,29 +534,80 @@ async def __main(
                 redshifts = snapshot_last_halo_redshifts,
                 halo_ids = snapshot_last_halo_ids,
                 halo_masses = snapshot_last_halo_masses,
-                halo_masses_scaled = snapshot_last_halo_masses_scaled,
+#                halo_masses_scaled = snapshot_last_halo_masses_scaled,
                 positions_pre_ejection = snapshot_last_halo_particle_positions
             )
+            t_end()
 
+            t_start("Opening output files", io = True)
             with output_file:
+                t_end()
+                t_start("Writing data", io = True)
 
                 Console.print_verbose_info("    Writing data.")
 
                 output_file.write_particle_type_dataset(results)
+                t_end()
+                t_start("Executing transaction?")
+            t_end()
 
-            with DistributedOutputReader(output_filepath, map_to_mpi = True) as output_file_reader:
-                file_data = output_file_reader.read_particle_type_dataset(ParticleType.gas, catalogue_info.number)
-                if (file_data.halo_ids != snapshot_last_halo_ids).sum() > 0:
-                    print(f"Fail on rank {MPI_Config.rank}.", (file_data.halo_ids != snapshot_last_halo_ids).sum(), snapshot_last_halo_ids.shape[0])
-#                print(MPI_Config.rank, (d["HaloID"][rank_slice] != data.halo_ids).sum(), flush = True)
-                collected_inputs = mpi_gather_array(snapshot_last_halo_ids)
-                collected_file_results = mpi_gather_array(file_data.halo_ids)
-                if MPI_Config.is_root:
-#                    collected_inputs = np.concatenate(collected_inputs)
-#                    collected_file_results = np.concatenate(collected_file_results)
-                    Console.print_raw("Written data != input data:", (collected_file_results != collected_inputs).sum())
+            t_start("Waiting for barrier", dead = True)
+            Console.print_debug("Waiting at MPI barrier.")
+            mpi_barrier()
+            Console.print_debug("Continuing...")
+            t_end()
+
+            # Timing output
+            if len(end_times) != len(start_times) or len(end_times) != len(time_labels) or len(end_times) != len(time_categories):
+                Console.print_verbose_error("Timing lists have lengths that don't match. Dumping raw data as a precaution:")
+                Console.print_debug("Labels:", time_labels)
+                Console.print_debug("Categories:", time_categories)
+                Console.print_debug("Start Times:", start_times)
+                Console.print_debug("End Times:", end_times)
+            else:
+                for i in range(len(time_labels)):
+                    Console.print_verbose_info(f"({(time_categories[i] if time_categories[i] is not None else ""):12s}) {end_times[i] - start_times[i]:9.2f} {time_labels[i]}")
+                total_io = sum([end_times[i] - start_times[i] for i in range(len(time_labels)) if time_categories[i] == "IO"])
+                total_compute = sum([end_times[i] - start_times[i] for i in range(len(time_labels)) if time_categories[i] == "COMPUTE"])
+                total_construction = sum([end_times[i] - start_times[i] for i in range(len(time_labels)) if time_categories[i] == "CONSTRUCTION"])
+                total_dead = sum([end_times[i] - start_times[i] for i in range(len(time_labels)) if time_categories[i] == "DEAD"])
+                total_misc = sum([end_times[i] - start_times[i] for i in range(len(time_labels)) if time_categories[i] == None])
+                aggregate_times["IO"] += total_io
+                aggregate_times["COMPUTE"] += total_compute
+                aggregate_times["CONSTRUCTION"] += total_construction
+                aggregate_times["DEAD"] += total_dead
+                aggregate_times[None] += total_misc
+                #Console.mpi_output_all_ranks()
+                Console.print_verbose_info(f"Timing results:\nIO:           {total_io:9.2f} s ({aggregate_times["IO"]:9.2f} s)\nCOMPUTE:      {total_compute:9.2f} s ({aggregate_times["COMPUTE"]:9.2f} s)\nCONSTRUCTION: {total_construction:9.2f} s ({aggregate_times["CONSTRUCTION"]:9.2f} s)\nDEAD:         {total_dead:9.2f} s ({aggregate_times["DEAD"]:9.2f} s)\nMISC.:        {total_misc:9.2f} s ({aggregate_times[None]:9.2f} s)")
+                #Console.mpi_output_root_rank_only()
+
+            stopwatch.stop()
+            del stopwatch
+
+#            with DistributedOutputReader(output_filepath, map_to_mpi = True) as output_file_reader:
+#                file_data = output_file_reader.read_particle_type_dataset(ParticleType.gas, catalogue_info.number)
+#                if (file_data.halo_ids != snapshot_last_halo_ids).sum() > 0:
+#                    print(f"Fail on rank {MPI_Config.rank}.", (file_data.halo_ids != snapshot_last_halo_ids).sum(), snapshot_last_halo_ids.shape[0])
+##                print(MPI_Config.rank, (d["HaloID"][rank_slice] != data.halo_ids).sum(), flush = True)
+#                collected_inputs = mpi_gather_array(snapshot_last_halo_ids)
+#                collected_file_results = mpi_gather_array(file_data.halo_ids)
+#                if MPI_Config.is_root:
+##                    collected_inputs = np.concatenate(collected_inputs)
+##                    collected_file_results = np.concatenate(collected_file_results)
+#                    Console.print_raw("Written data != input data:", (collected_file_results != collected_inputs).sum())
 
 #            stopwatch.lap()
+
+#            break
+    
+#            stopwatch.print_lap()
+
+#            barrier_time = stopwatch.get_elapsed_time_lap()
+#            mpi_barrier()
+#            all_barrier_times = MPI_Config.comm.gather(barrier_time, root = MPI_Config.root)
+#            if MPI_Config.is_root:
+#                Console.print_debug("Search barrier delay:", ", ".join([f"{v - min(all_barrier_times):.1f}" for v in all_barrier_times]))
+
     Console.print_info("DONE")
 
 import hashlib
@@ -419,13 +616,13 @@ T_snapshot = TypeVar("T_snapshot", bound = SnapshotBase)
 T_catalogue = TypeVar("T_catalogue", bound = CatalogueBase)
 class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
 
-    def __init__(self, number_of_workers: int, snapshot_type: type[T_snapshot], catalogue_type: type[T_catalogue], mass_of_L_star_at_z: Callable[[float], float]):
+    def __init__(self, number_of_workers: int, snapshot_type: type[T_snapshot], catalogue_type: type[T_catalogue]):#, mass_of_L_star_at_z: Callable[[float], float]):
 
         self.__number_of_workers = number_of_workers
         self.__snapshot_type = snapshot_type
         self.__catalogue_type = catalogue_type
 
-        self.__get_mass_of_L_star = mass_of_L_star_at_z
+#        self.__get_mass_of_L_star = mass_of_L_star_at_z
 
     def __call__(
             self,
@@ -434,10 +631,14 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
             prior_particle_ids: np.ndarray|None,
             prior_particle_last_halo_ids: np.ndarray|None,
             prior_particle_last_halo_masses: np.ndarray|None,
-            prior_particle_last_halo_masses_scaled: np.ndarray|None,
+#            prior_particle_last_halo_masses_scaled: np.ndarray|None,
             prior_particle_last_halo_redshifts: np.ndarray|None,
-            prior_particle_last_halo_positions: np.ndarray|None
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            prior_particle_last_halo_positions: np.ndarray|None,
+            t_start: Callable[[str], None], t_end: Callable[[], None]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        
+        t_end()
+        t_start("")
         
         if not isinstance(catalogue, self.__catalogue_type):
             raise TypeError(f"Unexpected catalogue type {type(catalogue).__name__}. Expected {self.__catalogue_type.__name__}.")
@@ -448,124 +649,210 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
         
         snapshot = catalogue.snapshot
 
+        t_end()
+
+        t_start("Dead time before IO", dead = True)
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
+        t_end()
+
+        t_start("snapshot.number_of_particles_this_rank", io = True)
         n_particles = snapshot.number_of_particles_this_rank(particle_type)
+        t_end()
 
+        t_start("Dead time between IO", dead = True)
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
+        t_end()
+
+        t_start("snapshot.get_IDs", io = True)
         snapshot_particle_ids = snapshot.get_IDs(particle_type)
-        _gathered_data = mpi_gather_array(snapshot_particle_ids)
-        if MPI_Config.is_root:
-#            _gathered_data = np.concatenate(_gathered_data)
-            Console.print_raw(f"ParticleIDs Array Hash:\n{hashlib.sha256(_gathered_data.tobytes()).hexdigest()}") # 9a6ec (L100@000)
+        t_end()
 
+        t_start("Dead time after IO", dead = True)
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
+        t_end()
+#        if USE_DEBUGGING_CHECKS:
+#            _gathered_data = mpi_gather_array(snapshot_particle_ids)
+#            if MPI_Config.is_root:
+#    #            _gathered_data = np.concatenate(_gathered_data)
+#                Console.print_raw(f"ParticleIDs Array Hash:\n{hashlib.sha256(_gathered_data.tobytes()).hexdigest()}") # 9a6ec (L100@000)
+
+        t_start("Creating initial data arrays", construction = True)
         Console.print_verbose_info("    Allocating result array memory.")
 
+        Console.print_verbose_info("        (last halo ids)", verbosity_level = 1)
         snapshot_particle_last_halo_ids = np.empty(n_particles, dtype = np.int64)
+        Console.print_verbose_info("        (last halo masses)", verbosity_level = 1)
         snapshot_particle_last_halo_masses = np.empty(n_particles, dtype = np.float64)
-        snapshot_particle_last_halo_masses_scaled = np.empty(n_particles, dtype = np.float64)
+#        Console.print_verbose_info("        (last halo scaled masses)", verbosity_level = 1)
+#        snapshot_particle_last_halo_masses_scaled = np.empty(n_particles, dtype = np.float64)
+        Console.print_verbose_info("        (last halo redshifts)", verbosity_level = 1)
         snapshot_particle_last_halo_redshifts = np.empty(n_particles, dtype = np.float64)
+        Console.print_verbose_info("        (last halo particle positions)", verbosity_level = 1)
         snapshot_particle_last_halo_positions = np.empty((n_particles, 3), dtype = np.float64)
+        Console.print_verbose_info("        (done)", verbosity_level = 1)
+
+        t_end()
 
         if prior_particle_ids is None:
             # This is the first snapshot
+
+            t_start("Filling initial data - no reorder", construction = True)
 
             Console.print_verbose_info("    No previous results. Filling result arrays with placeholder data.")
 
             snapshot_particle_last_halo_ids.fill(-1)
             snapshot_particle_last_halo_masses.fill(np.nan)
-            snapshot_particle_last_halo_masses_scaled.fill(np.nan)
+#            snapshot_particle_last_halo_masses_scaled.fill(np.nan)
             snapshot_particle_last_halo_redshifts.fill(np.nan)
             snapshot_particle_last_halo_positions.fill(np.nan)
 
+            t_end()
+
         else:
             # Reorganise existing data
+
+            t_start("Pre-reorder dead time", dead = True)
+            Console.print_debug("Waiting at MPI barrier.")
+            mpi_barrier()
+            Console.print_debug("Continuing...")
+            t_end()
+
+            t_start("Creating reorder", construction = True)
 
             Console.print_verbose_info("    Calculating reorder for previous result data.")
 
             #transition_to_new_order = ArrayReorder_MPI.create(prior_particle_ids, snapshot_particle_ids)
             transition_to_new_order = ArrayReorder_MPI_2.create(prior_particle_ids, snapshot_particle_ids)
 
-            test_mpi_reorder = transition_to_new_order(prior_particle_ids)
-            test_mpi_reorder2 = transition_to_new_order(prior_particle_last_halo_ids)
+            t_end()
 
-            all_prior_particle_ids = mpi_gather_array(prior_particle_ids)
-            all_prior_dataset = mpi_gather_array(prior_particle_last_halo_ids)
-            all_snapshot_particle_ids = mpi_gather_array(snapshot_particle_ids)
-            all_test_mpi_reorder = mpi_gather_array(test_mpi_reorder)
-            all_test_mpi_reorder2 = mpi_gather_array(test_mpi_reorder2)
-            if MPI_Config.is_root:
-#                all_prior_particle_ids = np.concatenate(all_prior_particle_ids)
-#                all_prior_dataset = np.concatenate(all_prior_dataset)
-#                all_snapshot_particle_ids = np.concatenate(all_snapshot_particle_ids)
-#                all_test_mpi_reorder = np.concatenate(all_test_mpi_reorder)
-#                all_test_mpi_reorder2 = np.concatenate(all_test_mpi_reorder2)
-                r = ArrayReorder_2.create(all_prior_particle_ids, all_snapshot_particle_ids)
-                test_reorder = r(all_prior_particle_ids)
-                test_reorder2 = r(all_prior_dataset)
-                Console.print_raw("Non-mpi reorder != target result:", (test_reorder != all_snapshot_particle_ids).sum(), f"({hashlib.sha256(test_reorder.tobytes()).hexdigest()[-5:]} & {hashlib.sha256(all_snapshot_particle_ids.tobytes()).hexdigest()[-5:]})")
-                Console.print_raw("Non-mpi reorder != MPI result:   ", (test_reorder != all_test_mpi_reorder).sum(), f"({hashlib.sha256(test_reorder.tobytes()).hexdigest()[-5:]} & {hashlib.sha256(all_test_mpi_reorder.tobytes()).hexdigest()[-5:]})")
-                Console.print_raw("Non-mpi reorder data != MPI result data:   ", (test_reorder2 != all_test_mpi_reorder2).sum(), f"({hashlib.sha256(test_reorder2.tobytes()).hexdigest()[-5:]} & {hashlib.sha256(all_test_mpi_reorder2.tobytes()).hexdigest()[-5:]})")
+#            if USE_DEBUGGING_CHECKS:
+#                test_mpi_reorder = transition_to_new_order(prior_particle_ids)
+#                test_mpi_reorder2 = transition_to_new_order(prior_particle_last_halo_ids)
+#
+#                all_prior_particle_ids = mpi_gather_array(prior_particle_ids)
+#                all_prior_dataset = mpi_gather_array(prior_particle_last_halo_ids)
+#                all_snapshot_particle_ids = mpi_gather_array(snapshot_particle_ids)
+#                all_test_mpi_reorder = mpi_gather_array(test_mpi_reorder)
+#                all_test_mpi_reorder2 = mpi_gather_array(test_mpi_reorder2)
+#                if MPI_Config.is_root:
+##                    all_prior_particle_ids = np.concatenate(all_prior_particle_ids)
+##                    all_prior_dataset = np.concatenate(all_prior_dataset)
+##                    all_snapshot_particle_ids = np.concatenate(all_snapshot_particle_ids)
+##                    all_test_mpi_reorder = np.concatenate(all_test_mpi_reorder)
+##                    all_test_mpi_reorder2 = np.concatenate(all_test_mpi_reorder2)
+#                    r = ArrayReorder_2.create(all_prior_particle_ids, all_snapshot_particle_ids)
+#                    test_reorder = r(all_prior_particle_ids)
+#                    test_reorder2 = r(all_prior_dataset)
+#                    Console.print_raw("Non-mpi reorder != target result:", (test_reorder != all_snapshot_particle_ids).sum(), f"({hashlib.sha256(test_reorder.tobytes()).hexdigest()[-5:]} & {hashlib.sha256(all_snapshot_particle_ids.tobytes()).hexdigest()[-5:]})")
+#                    Console.print_raw("Non-mpi reorder != MPI result:   ", (test_reorder != all_test_mpi_reorder).sum(), f"({hashlib.sha256(test_reorder.tobytes()).hexdigest()[-5:]} & {hashlib.sha256(all_test_mpi_reorder.tobytes()).hexdigest()[-5:]})")
+#                    Console.print_raw("Non-mpi reorder data != MPI result data:   ", (test_reorder2 != all_test_mpi_reorder2).sum(), f"({hashlib.sha256(test_reorder2.tobytes()).hexdigest()[-5:]} & {hashlib.sha256(all_test_mpi_reorder2.tobytes()).hexdigest()[-5:]})")
 
             Console.print_verbose_info("    Reordering...", end = "")
 
-            _gathered_data = mpi_gather_array(prior_particle_last_halo_ids)
-            if MPI_Config.is_root:
-#                _gathered_data = np.concatenate(_gathered_data)
-                Console.print_raw(f"prior_particle_last_halo_ids (before reorder) Array Hash:\n{hashlib.sha256(_gathered_data.tobytes()).hexdigest()}")
+#            if USE_DEBUGGING_CHECKS:
+#                _gathered_data = mpi_gather_array(prior_particle_last_halo_ids)
+#                if MPI_Config.is_root:
+##                    _gathered_data = np.concatenate(_gathered_data)
+#                    Console.print_raw(f"prior_particle_last_halo_ids (before reorder) Array Hash:\n{hashlib.sha256(_gathered_data.tobytes()).hexdigest()}")
             #transition_to_new_order(prior_particle_last_halo_ids, output_array = snapshot_particle_last_halo_ids)#TODO: using output_array causes an error!!!
+            t_start("Reordering prior_particle_last_halo_ids", compute = True)
             snapshot_particle_last_halo_ids = transition_to_new_order(prior_particle_last_halo_ids)
+            t_end()
 
-#            test_buffer = np.empty(n_particles, dtype = np.int64)
-#            transition_to_new_order(prior_particle_last_halo_ids, output_array = test_buffer)
-#            test_buffer = mpi_gather_array(test_buffer)
-#            if MPI_Config.is_root:
-#                test_buffer = np.concatenate(test_buffer)
-#                Console.print_debug(test_buffer.dtype, hashlib.sha256(test_buffer.tobytes()).hexdigest())
-#            test_buffer = np.empty(n_particles, dtype = np.int64)
-#            test_buffer[:] = transition_to_new_order(prior_particle_last_halo_ids)
-#            test_buffer = mpi_gather_array(test_buffer)
-#            if MPI_Config.is_root:
-#                test_buffer = np.concatenate(test_buffer)
-#                Console.print_debug(test_buffer.dtype, hashlib.sha256(test_buffer.tobytes()).hexdigest())
-#            test_buffer = np.empty(n_particles, dtype = np.int64)
-#            test_buffer = transition_to_new_order(prior_particle_last_halo_ids)
-#            test_buffer = mpi_gather_array(test_buffer)
-#            if MPI_Config.is_root:
-#                test_buffer = np.concatenate(test_buffer)
-#                Console.print_debug(test_buffer.dtype, hashlib.sha256(test_buffer.tobytes()).hexdigest())
+#            if USE_DEBUGGING_CHECKS:
+#                _gathered_data = mpi_gather_array(snapshot_particle_last_halo_ids)
+#                if MPI_Config.is_root:
+##                    _gathered_data = np.concatenate(_gathered_data)
+#                    Console.print_raw(f"snapshot_particle_last_halo_ids (before update) Array Hash:\n{hashlib.sha256(_gathered_data.tobytes()).hexdigest()}")
 
-            _gathered_data = mpi_gather_array(snapshot_particle_last_halo_ids)
-            if MPI_Config.is_root:
-#                _gathered_data = np.concatenate(_gathered_data)
-                Console.print_raw(f"snapshot_particle_last_halo_ids (before update) Array Hash:\n{hashlib.sha256(_gathered_data.tobytes()).hexdigest()}")
 #            transition_to_new_order(prior_particle_last_halo_masses, output_array = snapshot_particle_last_halo_masses)
-#            transition_to_new_order(prior_particle_last_halo_masses_scaled, output_array = snapshot_particle_last_halo_masses_scaled)
+##            transition_to_new_order(prior_particle_last_halo_masses_scaled, output_array = snapshot_particle_last_halo_masses_scaled)
 #            transition_to_new_order(prior_particle_last_halo_redshifts, output_array = snapshot_particle_last_halo_redshifts)
 #            transition_to_new_order(prior_particle_last_halo_positions, output_array = snapshot_particle_last_halo_positions)
-
+            t_start("Reordering prior_particle_last_halo_masses", compute = True)
             snapshot_particle_last_halo_masses = transition_to_new_order(prior_particle_last_halo_masses)
-            snapshot_particle_last_halo_masses_scaled = transition_to_new_order(prior_particle_last_halo_masses_scaled)
+            t_end()
+#            snapshot_particle_last_halo_masses_scaled = transition_to_new_order(prior_particle_last_halo_masses_scaled)
+            t_start("Reordering prior_particle_last_halo_redshifts", compute = True)
             snapshot_particle_last_halo_redshifts = transition_to_new_order(prior_particle_last_halo_redshifts)
+            t_end()
+            t_start("Reordering prior_particle_last_halo_positions", compute = True)
             snapshot_particle_last_halo_positions = transition_to_new_order(prior_particle_last_halo_positions)
+            t_end()
+
+            t_start("Post-reorder dead time - this should be insignificant", dead = True)
+            Console.print_debug("Waiting at MPI barrier.")
+            mpi_barrier()
+            Console.print_debug("Continuing...")
+            t_end()
+
+            t_start("Freeing memory")
+            del transition_to_new_order
+            del prior_particle_last_halo_ids
+            del prior_particle_last_halo_masses
+            del prior_particle_last_halo_redshifts
+            del prior_particle_last_halo_positions
+            gc.collect()
+            t_end()
 
             Console.print_raw_verbose("done")
 
+        t_start("Dead time before IO (x3)", dead = True)
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
+        t_end()
+
+        t_start("Reading halo indexes and masses", io = True)
         Console.print_verbose_info("    Reading catalogue data.")
 
-        halo_ids = catalogue.get_halo_IDs(particle_type)
-        halo_masses = catalogue.get_halo_masses(particle_type)
-        particle_halo_ids = catalogue.get_halo_IDs_by_snapshot_particle(particle_type, snapshot_particle_ids = snapshot_particle_ids)
+        Console.print_verbose_info("        Halo IDs by Particle.", verbosity_level = 1)
+        #if MPI_Config.is_root:
+        #    #particle_halo_ids = catalogue.get_halo_IDs_by_snapshot_particle(particle_type, snapshot_particle_ids = snapshot_particle_ids)
+        #    particle_halo_ids = mpi_scatter_array(
+        #        catalogue.get_halo_indexes_by_snapshot_particle(particle_type, snapshot_particle_ids = mpi_gather_array(snapshot_particle_ids)),
+        #        elements_this_rank = n_particles
+        #    )
+        #else:
+        #    mpi_gather_array(snapshot_particle_ids)
+        #    particle_halo_ids = mpi_scatter_array(None, elements_this_rank = n_particles)
+        particle_halo_ids = catalogue.get_halo_indexes_by_snapshot_particle(particle_type)
+        Console.print_verbose_info("        Halo IDs.", verbosity_level = 1)
+        #halo_ids = catalogue.get_halo_indexes(particle_type)
+        halo_ids = catalogue.get_halo_indexes()
+        Console.print_verbose_info("        Halo Masses.", verbosity_level = 1)
+        halo_masses = catalogue.get_halo_masses(catalogue.BasicHaloDefinitions.SO_200_CRIT.value).to("Msun").value
+        Console.print_verbose_info("        (done)", verbosity_level = 1)
+
+        t_end()
+
+        t_start("Dead time after IO (x3)", dead = True)
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
+        t_end()
 
 #        if prior_particle_ids is None:
 #            Console.print_debug(n_particles, None, snapshot_particle_ids.shape, snapshot_particle_last_halo_ids.shape, particle_halo_ids.shape)
 #        else:
 #            Console.print_debug(n_particles, prior_particle_ids.shape, snapshot_particle_ids.shape, snapshot_particle_last_halo_ids.shape, particle_halo_ids.shape)
 
-        snapshot_positions = snapshot.get_positions(particle_type)
-
+        t_start("Creating update mask")
         snapshot_particle_update_mask = np.full(n_particles, False, dtype = np.bool_)
+        t_end()
 
+        t_start("Halo search", compute = True)
         Console.print_verbose_info("    Searching haloes.")
 
-        for x in range(halo_ids.shape[0]):
+        #for x in range(halo_ids.shape[0]):
+        for x in np.where(np.isin(halo_ids, np.unique(particle_halo_ids)))[0]:
             # FOF groups with no SUBFIND subhaloes have a group mass but an M200 of 0
             # We don't want to consider these groups as they are likley transient in nature
             if halo_masses[x] > 0.0:
@@ -574,29 +861,82 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
                     snapshot_particle_update_mask,
                     snapshot_particle_last_halo_ids,
                     snapshot_particle_last_halo_masses,
-                    snapshot_particle_last_halo_masses_scaled,
-                    self.__get_mass_of_L_star(snapshot.redshift),
+#                    snapshot_particle_last_halo_masses_scaled,
+#                    self.__get_mass_of_L_star(snapshot.redshift),
                     halo_ids,
                     halo_masses,
                     particle_halo_ids
                 )
+        t_end()
 
-        Console.print_verbose_info("    Mapping snapshot result data.")
+        t_start("Freeing memory")
+        Console.print_verbose_info("    Freeing catalogue memory.")
+        del halo_ids
+        del halo_masses
+        del particle_halo_ids
+        gc.collect()
+        t_end()
+
+        t_start("Dead time before IO", dead = True)
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
+        t_end()
+
+        t_start("Reading particle positions", io = True)
+        Console.print_verbose_info("    Reading particle positions.")
+
+        snapshot_positions = snapshot.get_positions(particle_type)
+        t_end()
+
+        t_start("Dead time after IO", dead = True)
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
+        t_end()
+
+        t_start("Updating mappable data", compute = True)
+        Console.print_verbose_info("    Mapping snapshot and global values.")
 
         snapshot_particle_last_halo_redshifts[snapshot_particle_update_mask] = snapshot.redshift
         snapshot_particle_last_halo_positions[snapshot_particle_update_mask, :] = snapshot_positions[snapshot_particle_update_mask, :]
+        t_end()
 
-        _gathered_data = mpi_gather_array(snapshot_particle_last_halo_ids)
-        if MPI_Config.is_root:
-#            _gathered_data = np.concatenate(_gathered_data)
-            Console.print_raw(f"snapshot_particle_last_halo_ids Array Hash:\n{hashlib.sha256(_gathered_data.tobytes()).hexdigest()}") # cc706 (L100@000)
+        t_start("Freeing memory")
+        del snapshot_positions
+        gc.collect()
+        t_end()
 
+
+#        if USE_DEBUGGING_CHECKS:
+#            _gathered_data = mpi_gather_array(snapshot_particle_last_halo_ids)
+#            if MPI_Config.is_root:
+##                _gathered_data = np.concatenate(_gathered_data)
+#                Console.print_raw(f"snapshot_particle_last_halo_ids Array Hash:\n{hashlib.sha256(_gathered_data.tobytes()).hexdigest()}") # cc706 (L100@000)
+
+        t_start("Dead time before calculation of number of matches", dead = True)
+        Console.print_debug("Waiting at MPI barrier.")
+        mpi_barrier()
+        Console.print_debug("Continuing...")
+        t_end()
+
+        t_start("Gathering number of matched particles")
         matches_per_rank: list[int]|None = MPI_Config.comm.gather(snapshot_particle_update_mask.sum())
         Console.print_info(f"    Identified {sum(matches_per_rank if matches_per_rank is not None else [-1])} particles in haloes.")
+        t_end()
 
         Console.print_verbose_info("    Halo search step complete.")
 
-        return snapshot_particle_ids, snapshot_particle_last_halo_ids, snapshot_particle_last_halo_masses, snapshot_particle_last_halo_masses_scaled, snapshot_particle_last_halo_redshifts, snapshot_particle_last_halo_positions
+        t_start("Exiting searcher")
+
+        return (
+            snapshot_particle_ids,
+            snapshot_particle_last_halo_ids,
+            snapshot_particle_last_halo_masses,
+#            snapshot_particle_last_halo_masses_scaled,
+            snapshot_particle_last_halo_redshifts,
+            snapshot_particle_last_halo_positions
+        )
 
     @staticmethod
     def update_halo_particles(
@@ -604,19 +944,20 @@ class SnapshotSearcher(Generic[T_snapshot, T_catalogue]):
         updated_indexes_mask: np.ndarray,
         snapshot_particle_last_halo_ids: np.ndarray,
         snapshot_particle_last_halo_masses: np.ndarray,
-        snapshot_particle_last_halo_masses_scaled: np.ndarray,
-        halo_mass_at_L_star: float,
+#        snapshot_particle_last_halo_masses_scaled: np.ndarray,
+#        halo_mass_at_L_star: float,
         halo_ids: np.ndarray,
         halo_masses: np.ndarray,
         snapshot_particle_halo_ids: np.ndarray
     ) -> None:
         
-        Console.print_debug(f"Halo {halo_index}")
+        #Console.print_debug(f"Halo {halo_index}")
 
         halo_id = halo_ids[halo_index]
         particle_data_mask = snapshot_particle_halo_ids == halo_id
-        if particle_data_mask.sum() > 0:
+        if np.any(particle_data_mask):
+        #if particle_data_mask.sum() > 0:
             updated_indexes_mask[particle_data_mask] = True
             snapshot_particle_last_halo_ids[particle_data_mask] = halo_id
             snapshot_particle_last_halo_masses[particle_data_mask] = halo_masses[halo_index]
-            snapshot_particle_last_halo_masses_scaled[particle_data_mask] = halo_masses[halo_index] / halo_mass_at_L_star
+#            snapshot_particle_last_halo_masses_scaled[particle_data_mask] = halo_masses[halo_index] / halo_mass_at_L_star

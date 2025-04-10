@@ -7,8 +7,8 @@ name = "contra"
 dynamic = ["version"]
 description = ''
 readme = "README.md"
-requires-python = ">=3.10"
-license = ""
+requires-python = ">=3.12"
+#license = ""
 keywords = []
 authors = [
   { name = "Christopher Rowe", email = "chris.rowe19@outlook.com" },
@@ -38,6 +38,7 @@ dependencies = [
   "tol_colors",
   "atomic-weights",
 ]
+#"https://github.com/QuasarX1/astro-sph-tools.git",
 
 [project.urls]
 Documentation = "https://github.com/QuasarX1/contra#readme"

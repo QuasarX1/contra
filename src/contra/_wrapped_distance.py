@@ -1,6 +1,12 @@
 # SPDX-FileCopyrightText: 2024-present Christopher Rowe <chris.rowe19@outlook.com>
 #
 # SPDX-License-Identifier: None
+from astro_sph_tools.tools import calculate_periodic, calculate_wrapped_displacement, calculate_wrapped_distance
+
+
+
+
+'''
 import numpy as np
 
 def calculate_wrapped_displacement(from_positions: np.ndarray, to_positions: np.ndarray, box_width: float) -> np.ndarray:
@@ -28,3 +34,4 @@ def calculate_wrapped_distance(from_position: np.ndarray, to_positions: np.ndarr
         return squared_distance
     else:
         return np.sqrt(squared_distance)
+'''

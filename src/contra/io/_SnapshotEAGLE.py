@@ -331,7 +331,7 @@ class SnapshotEAGLE(SnapshotBase[SimType_EAGLE]):
         #return self.__data_read_reorder[particle_type](loaded_data if (loaded_data:=self.__file_object.read_dataset(particle_type.value, field_name)) is not None else np.empty((0,), dtype = expected_dtype))
         loaded_data = self.__file_object.read_dataset(particle_type.value, field_name)
         processed_object = loaded_data if loaded_data is not None else np.empty((0,), dtype = expected_dtype)
-        Console.print_info(f"PROGRESS CHECK 1.1")
+#        Console.print_info(f"PROGRESS CHECK 1.1")
         redistributed_data =  self.__data_read_reorder[particle_type](processed_object)
         return redistributed_data
 

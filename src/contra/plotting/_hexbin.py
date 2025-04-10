@@ -77,6 +77,29 @@ def create_hexbin_log10_count():
 
 
 
+def create_hexbin_fraction(mask: np.ndarray[tuple[int], np.dtype[np.bool_]]):
+    """
+    Assign hexbin cell colour to the fraction of of elements that fall within the bin.
+    """
+    @create_hexbin_colour_function
+    def calculate_statistic_fraction(indices: np.ndarray, /) -> float:
+        return mask[indices].sum() / len(indices)
+    return calculate_statistic_fraction
+
+
+
+def create_hexbin_quantity_fraction(data: np.ndarray[tuple[int], np.dtype[np.floating]], mask: np.ndarray[tuple[int], np.dtype[np.bool_]]):
+    """
+    Assign hexbin cell colour to the fraction of of elements that fall within the bin.
+    """
+    @create_hexbin_colour_function
+    def calculate_statistic_quantity_fraction(indices: np.ndarray, /) -> float:
+        subset = data[indices]
+        return subset[mask[indices]].sum() / subset.sum()
+    return calculate_statistic_quantity_fraction
+
+
+
 def create_hexbin_sum(data: np.ndarray):
     """
     Assign hexbin cell colour to the sum of the elements from this dataset that fall within the bin.
@@ -160,6 +183,19 @@ def create_hexbin_log10_weighted_mean(data: np.ndarray, weights: np.ndarray, off
 
 
 
+def test_function__create_hexbin_log10_weighted_mean(data: np.ndarray, weights: np.ndarray, offset: float = 0.0):
+    """
+    Assign hexbin cell colour to the mean of elements from this dataset that fall within the bin.
+
+    Use the weights from an array of equal length.
+    """
+    @create_hexbin_colour_function
+    def calculate_statistic_weighted_mean(indices: np.ndarray, /) -> float:
+        return np.log10(np.sum(data[indices] * weights[indices]) / np.sum(weights[indices]) / offset)
+    return calculate_statistic_weighted_mean
+
+
+
 def create_hexbin_median(data: np.ndarray):
     """
     Assign hexbin cell colour to the median of elements from this dataset that fall within the bin.
@@ -185,13 +221,15 @@ def create_hexbin_percentile(data: np.ndarray, percentile: float):
 def plot_hexbin(
     x: np.ndarray,
     y: np.ndarray,
-    colour_function: Callable[[float|None, float|None], Callable[[np.ndarray], float]]|None = None,
+    colour_function: Callable[[float|None, float|None, float|None], Callable[[np.ndarray], float]]|None = None,
     vmin: float|None = None,
     vmax: float|None = None,
     vdefault: float = -np.inf,
     cmap = "viridis",
+    alpha_values: np.ndarray[tuple[int], np.dtype[np.float64]]|None = None,
     gridsize: int | tuple[int, int] = 500,
     axis = None,
+    edgecolor = None,
     **kwargs
 ) -> PolyCollection:
     """
@@ -202,7 +240,7 @@ def plot_hexbin(
     `colour_function` will default to `create_hexbin_count` if set as `None`.
     """
 
-    return (axis if axis is not None else plt).hexbin(
+    hexes = (axis if axis is not None else plt).hexbin(
         x = x,
         y = y,
         C = np.arange(len(x)),
@@ -211,6 +249,11 @@ def plot_hexbin(
         cmap = cmap,
         vmin = vmin,
         vmax = vmax,
+        edgecolor = edgecolor,
         **kwargs
     )
 
+    if alpha_values is not None:
+        hexes.set_alpha(alpha_values)
+
+    return hexes

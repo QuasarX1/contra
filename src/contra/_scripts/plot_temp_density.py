@@ -1,11 +1,9 @@
 # SPDX-FileCopyrightText: 2024-present Christopher Rowe <chris.rowe19@outlook.com>
 #
 # SPDX-License-Identifier: None
-from .. import ParticleType
 from .._L_star import get_L_star_halo_mass_of_z
-from ..io import SnapshotBase, SnapshotEAGLE, SnapshotSWIFT, FileTreeScraper_EAGLE
 from ..io._Output_Objects import OutputReader, ParticleTypeDataset, ContraData, DistributedOutputReader
-from ..plotting._hexbin import plot_hexbin, create_hexbin_log10_count, create_hexbin_mean, create_hexbin_log10_mean, create_hexbin_weighted_mean, create_hexbin_log10_weighted_mean, create_hexbin_median
+from ..plotting._hexbin import plot_hexbin, create_hexbin_count, create_hexbin_log10_count, create_hexbin_fraction, create_hexbin_quantity_fraction, create_hexbin_mean, create_hexbin_log10_mean, create_hexbin_weighted_mean, create_hexbin_log10_weighted_mean, create_hexbin_median
 
 import datetime
 import os
@@ -21,10 +19,15 @@ from QuasarCode.Tools import ScriptWrapper
 from QuasarCode.MPI import MPI_Config
 import tol_colors
 
+from astro_sph_tools import ParticleType
+from astro_sph_tools.io.data_structures import SnapshotBase
+from astro_sph_tools.io.EAGLE import FileTreeScraper_EAGLE, SnapshotEAGLE
+from astro_sph_tools.io.ionisation_tables import IonisationTable_HM01, SupportedIons
+
 # 0.0134
 Z_SOLAR = 0.012663729 # Z_sun (from EAGLE L50N752 -> Constants -> Z_Solar)
 PRIMORDIAL_H_ABUNDANCE = 0.752 # Mass fraction of H (from EAGLE L50N752 -> Parameters -> ChemicalElements -> InitAbundance_Hydrogen)
-N_CONTOURING_BINS = 50
+N_CONTOURING_BINS = 500
 N_PLOTTING_HEXES = 500
 
 def main():
@@ -61,7 +64,22 @@ def main():
             ScriptWrapper.Flag(
                 name = "colour-count",
                 sets_param = "plot_hist",
-                description = "Colour by the number of particles in heach bin.\nThis will be automatically set if no other colour options are specified."
+                description = "Colour by the number of particles in each bin.\nThis will be automatically set if no other colour options are specified."
+            ),
+            ScriptWrapper.Flag(
+                name = "colour-tracked-fraction",
+                sets_param = "plot_tracked_fraction",
+                description = "Colour by the fraction of particles in each bin that are tracked."
+            ),
+            ScriptWrapper.Flag(
+                name = "colour-tracked-mass-fraction",
+                sets_param = "plot_tracked_mass_fraction",
+                description = "Colour by the fraction of particle mass in each bin that is tracked."
+            ),
+            ScriptWrapper.Flag(
+                name = "colour-tracked-metal-mass-fraction",
+                sets_param = "plot_tracked_metal_mass_fraction",
+                description = "Colour by the fraction of metal mass in each bin that is tracked."
             ),
             ScriptWrapper.Flag(
                 name = "colour-metallicity",
@@ -216,6 +234,12 @@ def main():
                 description = "Maximum redshift, above which the colour will be uniform.",
                 conversion_function = float
             ),
+            ScriptWrapper.OptionalParam[float](
+                name = "number-of-hexes",
+                description = f"Number of hexes to use. Defaults to {N_PLOTTING_HEXES}",
+                conversion_function = int,
+                default_value = N_PLOTTING_HEXES
+            ),
             ScriptWrapper.Flag(
                 name = "mean",
                 sets_param = "use_mean",
@@ -239,9 +263,20 @@ def main():
                 name = "ignore-halo-particles",
                 description = "Exclude particles currently in a halo."
             ),
+            ScriptWrapper.OptionalParam[list[list[str|float]]](
+                name = "limit-ion-fraction",
+                description = "Include only particles with specified metal ions and at least the associated ionisation fraction.\nRequires --ionisation-table-directory to be set.\nSpecify using the format \"<element-symbol><state-number>:<ionisation-fraction>\" as a comma seperated list.\nTo request all particles containing a non-zero ammount of an ion, set the associated ionisation fraction to -1.",
+                conversion_function = ScriptWrapper.make_list_converter(",", ScriptWrapper.make_list_converter(":", [str, float])),
+                default_value = [],
+                requirements = ["ionisation-table-directory"]
+            ),
+            ScriptWrapper.OptionalParam[str](
+                name = "ionisation-table-directory",
+                description = "Path to the directory containing the appropriate ionisation fraction tables.\nThis is required when using --limit-ion-fraction."
+            ),
             ScriptWrapper.Flag(
                 name = "show-contours",
-                description = "Draw contours showing the mass distribution of included particles."
+                description = "Draw contours showing the distribution of included particles (shows binned number of particles by default)."
             ),
             ScriptWrapper.Flag(
                 name = "contours-use-all-particles",
@@ -250,20 +285,20 @@ def main():
             ),
             ScriptWrapper.Flag(
                 name = "contours-use-masses",
-                description = "Use contours based on the total mass density in each bin as opposed to the total number density.",
+                description = "Use contours based on the total mass in each bin as opposed to the number of particles.",
                 requirements = ["show-contours"]
             ),
             ScriptWrapper.OptionalParam[list[float]](
                 name = "contour-percentiles",
                 default_value = [10, 25, 50, 75, 90],
-                description = "Percentiles at which to plot contours, as a comma seperated list (in ascending order).\nDefaults to: 10%, 25%, 50%, 75% and 90%.",
+                description = "Percentiles at which to plot contours in log10 space, as a comma seperated list (in ascending order).\nDefaults to: 10%, 25%, 50%, 75% and 90%.\nHas no effect if specifying --contour-values.",
                 conversion_function = ScriptWrapper.make_list_converter(",", float),
                 conflicts = ["contour-values"]
             ),
             ScriptWrapper.OptionalParam[list[float]](
                 name = "contour-values",
                 sets_param = "contour_log10_values",
-                description = "log10 bin density values at which to plot contours, as a comma seperated list (in ascending order).\nNote, these values will be specific to either number density or mass density contours!",
+                description = "log10 bin density values at which to plot contours, as a comma seperated list (in ascending order).\nNote, these values will be specific to either particle number or mass contours!\nOverrides --contour-percentiles.",
                 conversion_function = ScriptWrapper.make_list_converter(",", float),
                 conflicts = ["contour-percentiles"]
             ),
@@ -288,6 +323,9 @@ async def __main(
     use_number_density: bool,
     plot_hist: bool,
     plot_metallicity: bool,
+    plot_tracked_fraction: bool,
+    plot_tracked_mass_fraction: bool,
+    plot_tracked_metal_mass_fraction: bool,
     plot_last_halo_mass: bool,
     plot_metal_weighted_last_halo_mass: bool,
     plot_metal_weighted_last_halo_redshift: bool,
@@ -313,11 +351,14 @@ async def __main(
     max_colour_halo_mass: float | None,
     min_colour_halo_redshift: float | None,
     max_colour_halo_redshift: float | None,
+    number_of_hexes: int,
     use_mean: bool,
     stack_row: bool,
     stack_column: bool,
 #    show_igm: bool,
     ignore_halo_particles: bool,
+    limit_ion_fraction: list[list[str|float]],
+    ionisation_table_directory: str|None,
     show_contours: bool,
     contours_use_all_particles: bool,
     contours_use_masses: bool,
@@ -328,8 +369,19 @@ async def __main(
 ) -> None:
 
     # If not other plot types are specified, plot count bins
-    if not (plot_metallicity or plot_last_halo_mass or plot_metal_weighted_last_halo_mass or plot_metal_weighted_last_halo_redshift):
+    if not (plot_metallicity or plot_tracked_fraction or plot_tracked_mass_fraction or plot_tracked_metal_mass_fraction or plot_last_halo_mass or plot_metal_weighted_last_halo_mass or plot_metal_weighted_last_halo_redshift):
         plot_hist = True
+
+    # Check the ionisation tables directory exists if it will be required
+    # This isn't a gaurentee that the tables exist or that they can be read - just a
+    # quick check early on as there is no point in continuuing jus to error later if the path is wrong!
+    if len(limit_ion_fraction) > 0:
+        if ionisation_table_directory is None or not os.path.exists(ionisation_table_directory):
+            Console.print_error(f"Unable to find a directory at \"{ionisation_table_directory}\" and the ionisation tables are required.")
+            Console.print_info("Terminating...")
+            return
+
+    do_tracking_fraction_plots: bool = plot_tracked_fraction or plot_tracked_mass_fraction or plot_tracked_metal_mass_fraction
 
     split_files: int
     try:
@@ -339,6 +391,7 @@ async def __main(
         split_files = True
     except:
         split_files = not os.path.exists(input_filepath) and os.path.exists(f"{input_filepath}.0")
+
     if not split_files and not os.path.exists(input_filepath):
         Console.print_error(f"Unable to find file or distributed files matching the file " + ("name" if not split_files else "pattern") + f": {input_filepath}")
         Console.print_info("Terminating...")
@@ -376,7 +429,17 @@ async def __main(
 
 
 
-    # Load data
+    # Load ionisation table data if required
+
+    ionisation_interpolation_tables: dict[str, IonisationTable_HM01] = {}
+    if len(limit_ion_fraction) > 0:
+        Console.print_info("Reading ionisation tables.")
+        for ion, _ in limit_ion_fraction:
+            ionisation_interpolation_tables[ion] = IonisationTable_HM01(SupportedIons.get_ions_of_element(ion[:(2 if ion[1].isalpha() else 1)].title())[int(ion[(2 if ion[1].isalpha() else 1):])], ionisation_table_directory)
+
+
+
+    # Load particle data
 
     Console.print_info("Reading data.")
 
@@ -391,46 +454,130 @@ async def __main(
 
     #nonzero_halo_mass_mask: np.ndarray = gas_dataset.halo_masses > 0.0
 
-    particle_metalicities: np.ndarray = snap.get_metalicities(ParticleType.gas).value
+    particle_metalicities: np.ndarray = snap.get_metallicities(ParticleType.gas).value
 
     data_mask: np.ndarray = located_particle_mask
+    if do_tracking_fraction_plots:
+        partial_data_mask: np.ndarray = np.full(data_mask.shape, True, dtype = np.bool_)
     if metals_only:
-        data_mask &= particle_metalicities > 0.0
+        submask = particle_metalicities > 0.0
+        if do_tracking_fraction_plots:
+            partial_data_mask &= submask
+        data_mask &= submask
     if ignore_halo_particles:
-        data_mask &= gas_dataset.redshifts > snap.redshift
+        submask = gas_dataset.redshifts > snap.redshift
+        if do_tracking_fraction_plots:
+            partial_data_mask &= submask
+        data_mask &= submask
     n_particles: int = data_mask.sum()
 
     assert (~(gas_dataset.halo_masses[data_mask] > 0)).sum() == 0
 
+    if len(limit_ion_fraction) > 0:
+        Console.print_info(f"{n_particles} particles remaining before applying ionisation fraction filter conditions.")
+
+        # Some fields need to be read in advance
+        hydrogen_number_density = snap.get_number_densities(ParticleType.gas, "Hydrogen", default_abundance = PRIMORDIAL_H_ABUNDANCE).to("cm**(-3)").value
+        gas_temperature = snap.get_temperatures(ParticleType.gas).to("K").value
+
+        for ion, min_fraction in limit_ion_fraction:
+            element_name: str
+            match ion[:(2 if ion[1].isalpha() else 1)].title():
+                case "H":  element_name = "Hydrogen"
+                case "He": element_name = "Helium"
+                case "C":  element_name = "Carbon"
+                case "N":  element_name = "Nitrogen"
+                case "O":  element_name = "Oxygen"
+                case "Ne": element_name = "Neon"
+                case "Mg": element_name = "Magnesium"
+                case "Si": element_name = "Silicon"
+                case "Fe": element_name = "Iron"
+                case _:
+                    raise ValueError(f"Ion \"{ion}\" is for an unsupported element.")
+            if snap.snipshot:
+                Console.print_warning("Using snipshot data so unable to read elemental abundances.\nNo check will be performed to ensure particles contain metals of the specified element!")
+            else:
+                elemental_abundance = snap.get_elemental_abundance(ParticleType.gas, element_name)
+                submask = (elemental_abundance > 0)
+                data_mask &= submask
+                if do_tracking_fraction_plots:
+                    partial_data_mask &= submask
+            ion_frac = ionisation_interpolation_tables[ion].evaluate_at_redshift(
+                np.column_stack([np.log10(hydrogen_number_density), np.log10(gas_temperature)]),
+                snap.redshift
+            )
+            Console.print_debug(ion_frac)
+            Console.print_debug(ion_frac.min(), ion_frac.max())
+            if limit_ion_fraction == -1:
+                Console.print_info(f"Retaining only particles with any {ion.title()} ions.")
+                submask = ion_frac > 0
+                data_mask &= submask
+                if do_tracking_fraction_plots:
+                    partial_data_mask &= submask
+                Console.print_verbose_info(f"{data_mask.sum()} particles remaining.")
+            else:
+                Console.print_info(f"Retaining only particles with {ion.title()} ions where the ionisation fraction is at least {min_fraction}.")
+                submask = ion_frac >= min_fraction
+                data_mask &= submask
+                if do_tracking_fraction_plots:
+                    partial_data_mask &= submask
+                Console.print_verbose_info(f"{data_mask.sum()} particles remaining.")
+        n_particles = data_mask.sum()
+
+    if n_particles == 0:
+        Console.print_error("No particles selected by filtering conditions.")
+        Console.print_info("Terminating...")
+        return
+    else:
+        Console.print_info(f"Selected {n_particles} particles.")
+
     log10_last_halo_masses: np.ndarray = np.log10(gas_dataset.halo_masses[data_mask])
     last_halo_redshifts: np.ndarray = gas_dataset.redshifts[data_mask]
 
-    if contours_use_all_particles:
+    if contours_use_all_particles or do_tracking_fraction_plots:
         all_particle_masses = snap.get_masses(ParticleType.gas).to("Msun").value
         particle_masses = all_particle_masses[data_mask]
     else:
         particle_masses = snap.get_masses(ParticleType.gas).to("Msun").value[data_mask]
 
+    if contours_use_all_particles or do_tracking_fraction_plots:
+        all_particle_metalicities = particle_metalicities
     particle_metalicities = particle_metalicities[data_mask]
     if use_mean:
         particle_metal_masses: np.ndarray = particle_masses * particle_metalicities
 
     log10_particle_temperatures: np.ndarray
-    if contours_use_all_particles:
-        all_log10_particle_temperatures = np.log10(snap.get_temperatures(ParticleType.gas).to("K").value)
+    if contours_use_all_particles or do_tracking_fraction_plots:
+        if len(limit_ion_fraction) > 0:
+                # This data has already been read when interpolating for ionisation fraction
+            all_log10_particle_temperatures = np.log10(gas_temperature)
+        else:
+            all_log10_particle_temperatures = np.log10(snap.get_temperatures(ParticleType.gas).to("K").value)
         log10_particle_temperatures = all_log10_particle_temperatures[data_mask]
     else:
-        log10_particle_temperatures = np.log10(snap.get_temperatures(ParticleType.gas).to("K").value[data_mask])
+        if len(limit_ion_fraction) > 0:
+            # This data has already been read when interpolating for ionisation fraction
+            log10_particle_temperatures = np.log10(gas_temperature[data_mask])
+        else:
+            log10_particle_temperatures = np.log10(snap.get_temperatures(ParticleType.gas).to("K").value[data_mask])
 
     particle_densities: np.ndarray
     if use_number_density:
-        if contours_use_all_particles:
-            all_particle_densities = snap.get_number_densities(ParticleType.gas, "Hydrogen", default_abundance = PRIMORDIAL_H_ABUNDANCE).to("cm**(-3)").value
+        if contours_use_all_particles or do_tracking_fraction_plots:
+            if len(limit_ion_fraction) > 0:
+                # This data has already been read when interpolating for ionisation fraction
+                all_particle_densities = hydrogen_number_density
+            else:
+                all_particle_densities = snap.get_number_densities(ParticleType.gas, "Hydrogen", default_abundance = PRIMORDIAL_H_ABUNDANCE).to("cm**(-3)").value
             particle_densities = all_particle_densities[data_mask]
         else:
-            particle_densities = snap.get_number_densities(ParticleType.gas, "Hydrogen").to("cm**(-3)").value[data_mask]
+            if len(limit_ion_fraction) > 0:
+                # This data has already been read when interpolating for ionisation fraction
+                particle_densities = hydrogen_number_density[data_mask]
+            else:
+                particle_densities = snap.get_number_densities(ParticleType.gas, "Hydrogen").to("cm**(-3)").value[data_mask]
     else:
-        if contours_use_all_particles:
+        if contours_use_all_particles or do_tracking_fraction_plots:
             all_particle_densities = snap.get_densities(ParticleType.gas).to("Msun/Mpc**3").value
             particle_densities = all_particle_densities[data_mask]
         else:
@@ -464,7 +611,7 @@ async def __main(
 
         log10_particle_overdensities: np.ndarray = np.log10(particle_densities / mean_baryon_density)
 
-        if contours_use_all_particles:
+        if contours_use_all_particles or do_tracking_fraction_plots:
             all_particle_densities = np.log10(all_particle_densities / mean_baryon_density)
 
         if min_density is not None:
@@ -475,7 +622,7 @@ async def __main(
     else:
         log10_particle_numberdensities: np.ndarray = np.log10(particle_densities)
 
-        if contours_use_all_particles:
+        if contours_use_all_particles or do_tracking_fraction_plots:
             all_particle_densities = np.log10(all_particle_densities)
 
 
@@ -486,12 +633,16 @@ async def __main(
 
     reduce_colour__count = None
     reduce_colour__metalicity = None
+    reduce_colour__tracked_fraction = None
+    reduce_colour__tracked_mass_fraction = None
+    reduce_colour__tracked_metal_mass_fraction = None
     reduce_colour__last_halo_mass = None
     reduce_colour__metal_weighted_last_halo_mass = None
     reduce_colour__metal_weighted_last_halo_redshift = None
 
     if plot_hist:
-        reduce_colour__count = create_hexbin_log10_count()
+        #reduce_colour__count = create_hexbin_log10_count()
+        reduce_colour__count = create_hexbin_count()
 
     if plot_metallicity:
         if use_mean:
@@ -500,6 +651,15 @@ async def __main(
             #TODO: is this mass or metal mass weighted and does the label need changing?!
         else:
             reduce_colour__metalicity = create_hexbin_median(log10_one_plus_particle_metalicities_solar)
+
+    if plot_tracked_fraction:
+        reduce_colour__tracked_fraction = create_hexbin_fraction(located_particle_mask[partial_data_mask])
+
+    if plot_tracked_mass_fraction:
+        reduce_colour__tracked_mass_fraction = create_hexbin_quantity_fraction(all_particle_masses[partial_data_mask], located_particle_mask[partial_data_mask])
+
+    if plot_tracked_metal_mass_fraction:
+        reduce_colour__tracked_metal_mass_fraction = create_hexbin_quantity_fraction(all_particle_masses[partial_data_mask] * all_particle_metalicities[partial_data_mask], located_particle_mask[partial_data_mask])
 
     if plot_last_halo_mass:
         if use_mean:
@@ -542,14 +702,34 @@ async def __main(
             if contours_use_masses:
                 contour_weights = particle_masses
 
-        
+        # Calculate the value in each bin
         h, xedges, yedges = np.histogram2d(contour_densities, contour_temperatures, N_CONTOURING_BINS, weights = contour_weights)
 
+        # Get information about the dimensions of the bins and scale for density
+        bin_width: float = (contour_densities.max() - contour_densities.min()) / N_CONTOURING_BINS
+        bin_height: float = (contour_temperatures.max() - contour_temperatures.min()) / N_CONTOURING_BINS
+        bin_density_conversion: float = (bin_width * bin_height * snap.get_total_mass(ParticleType.dark_matter).to("Msun").value)**-1 # 1 / area
+        h_density = h * bin_density_conversion
+
+        if contour_log10_values is None:
+            check_values = h_density.reshape(((len(xedges) - 1) * (len(yedges) - 1),))
+            contour_values = np.percentile(check_values[check_values != 0], contour_percentiles)
+        else:
+            # contour_log10_values is an input parameter scaled to be the approximate value of the hexes the contour overlays
+            contour_values = 10**np.array(contour_log10_values, dtype = np.float64)
+
+
+
+
+
+
+
+        '''
         # To get the approximate hex value:
         #     hex_value = hist_value * hex_area / hist_area
         #               = hist_value * hist_to_hex_scale
-        #hist_to_hex_scale = (N_PLOTTING_HEXES**2 / (2 * np.sqrt(3))) / ((xedges[1] - xedges[0]) * (yedges[1] - yedges[0]))
-        hex_width = (contour_densities.max() - contour_densities.min()) / N_PLOTTING_HEXES
+        #hist_to_hex_scale = (number_of_hexes**2 / (2 * np.sqrt(3))) / ((xedges[1] - xedges[0]) * (yedges[1] - yedges[0]))
+        hex_width = (contour_densities.max() - contour_densities.min()) / number_of_hexes
         hist_to_hex_scale = (hex_width)**2 / ((xedges[1] - xedges[0]) * (yedges[1] - yedges[0]) * 2 * np.sqrt(3))
 
         if contour_log10_values is None:
@@ -560,15 +740,22 @@ async def __main(
         else:
             # contour_log10_values is an input parameter scaled to be the approximate value of the hexes the contour overlays
             contour_values = 10**np.array(contour_log10_values, dtype = np.float64) / hist_to_hex_scale
+        '''
+
+
+
+
+
 
         # Reported values are the log of the equivilant hexbin value and NOT the value of the 2D histogram used to create the contour!
-        Console.print_info(f"Plotting contours at log10 sum({'M' if contours_use_masses else 'N'}) of: {', '.join([str(v) for v in np.log10(contour_values * hist_to_hex_scale)])}")
-        Console.print_info(f"{', '.join([str(v) for v in np.log10(contour_values)])}")
+        Console.print_info(f"Plotting contours at log10{{ sum({'M' if contours_use_masses else 'N'}) [{'Msun ' if contours_use_masses else ''}{'log10(cm^3)' if use_number_density else 'dex^-1'} log10(K)^-1] }} of: {', '.join([str(v) for v in np.log10(contour_values)])}")
+        #Console.print_info(f"Plotting contours at log10 sum({'M' if contours_use_masses else 'N'}) of: {', '.join([str(v) for v in np.log10(contour_values * hist_to_hex_scale)])}")
+        #Console.print_info(f"{', '.join([str(v) for v in np.log10(contour_values)])}")
 
         contour_args = (
             np.array(xedges[:-1] + ((xedges[1] - xedges[0])/2), dtype = np.float64),
             np.array(yedges[:-1] + ((yedges[1] - yedges[0])/2), dtype = np.float64),
-            np.array(h.T, dtype = np.float64)
+            np.array(h_density.T, dtype = np.float64)
         )
 
         contour_kwargs = {
@@ -587,7 +774,7 @@ async def __main(
 
     plt.rcParams['font.size'] = 12
 
-    n_subplots = int(plot_hist) + int(plot_metallicity) + int(plot_last_halo_mass) + int(plot_metal_weighted_last_halo_mass) + int(plot_metal_weighted_last_halo_redshift)
+    n_subplots = int(plot_hist) + int(plot_metallicity) + int(plot_last_halo_mass) + int(plot_metal_weighted_last_halo_mass) + int(plot_metal_weighted_last_halo_redshift) + int(plot_tracked_fraction) + int(plot_tracked_mass_fraction) + int(plot_tracked_metal_mass_fraction)
     seperate_plots = (n_subplots == 1) or not (stack_row or stack_column)
 
     current_subplot_index = 0
@@ -606,14 +793,14 @@ async def __main(
 
     plot_num: int = 0
     for plot_name, label, colour_reduction_function, min_colour, max_colour in zip(
-        ("histogram",                             "metallicity",                                                                                                                   "last-halo-mass",                                                                                               "metal-weighted-last-halo-mass",                                                                                "metal-weighted-last-halo-redshift"),
+        ("histogram",                             "metallicity",                                                                                                                   "tracked-particle-fraction",     "tracked-mass-fraction",              "tracked-metal-mass-fraction",              "last-halo-mass",                                                                                               "metal-weighted-last-halo-mass",                                                                                "metal-weighted-last-halo-redshift"),
 #        ("${\\rm log_{10}}$ Number of Particles", ("Metal-mass Weighted Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ 1 + Z ($\\rm Z_{\\rm \\odot}$)", ("Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ $M_{\\rm 200}$ of last halo ($\\rm M_{\\rm \\odot}$)", "Metal-mass Weighted Mean ${\\rm log_{10}}$ $M_{\\rm 200}$ of last halo ($\\rm M_{\\rm \\odot}$)"),
-        ("${\\rm log_{10}}$ Number of Particles", "${\\rm log_{10}}$ " + ("Metal-mass Weighted Mean" if use_mean else "Median") + " Z - ${\\rm log_{10}}$ $\\rm Z_{\\rm \\odot}$", ("Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ $M_{\\rm 200}$ of last halo ($\\rm M_{\\rm \\odot}$)", "Metal-mass Weighted Mean ${\\rm log_{10}}$ $M_{\\rm 200}$ of Last Halo ($\\rm M_{\\rm \\odot}$)",              "Metal-mass Weighted Mean $z$ of Last Halo Membership"),
-        (reduce_colour__count,                    reduce_colour__metalicity,                                                                                                       reduce_colour__last_halo_mass,                                                                                  reduce_colour__metal_weighted_last_halo_mass,                                                                   reduce_colour__metal_weighted_last_halo_redshift),
-        (min_colour_log_count,                    min_colour_metalicity_plotted,                                                                                                   min_colour_halo_mass,                                                                                           min_colour_halo_mass,                                                                                           min_colour_halo_redshift if min_colour_halo_redshift is not None else None),
-        (max_colour_log_count,                    max_colour_metalicity_plotted,                                                                                                   max_colour_halo_mass,                                                                                           max_colour_halo_mass,                                                                                           max_colour_halo_redshift if max_colour_halo_redshift is not None else None)
+        ("${\\rm log_{10}}$ Number of Particles", "${\\rm log_{10}}$ " + ("Metal-mass Weighted Mean" if use_mean else "Median") + " Z - ${\\rm log_{10}}$ $\\rm Z_{\\rm \\odot}$", "Fraction of Particles Tracked", "Fraction of Mass Tracked",           "Fraction of Metal Mass Tracked",           ("Mean" if use_mean else "Median") + " ${\\rm log_{10}}$ $M_{\\rm 200}$ of last halo ($\\rm M_{\\rm \\odot}$)", "Metal-mass Weighted Mean ${\\rm log_{10}}$ $M_{\\rm 200}$ of Last Halo ($\\rm M_{\\rm \\odot}$)",              "Metal-mass Weighted Mean $z$ of Last Halo Membership"),
+        (reduce_colour__count,                    reduce_colour__metalicity,                                                                                                       reduce_colour__tracked_fraction, reduce_colour__tracked_mass_fraction, reduce_colour__tracked_metal_mass_fraction, reduce_colour__last_halo_mass,                                                                                  reduce_colour__metal_weighted_last_halo_mass,                                                                   reduce_colour__metal_weighted_last_halo_redshift),
+        (min_colour_log_count,                    min_colour_metalicity_plotted,                                                                                                   0,                               0,                                    0,                                          min_colour_halo_mass,                                                                                           min_colour_halo_mass,                                                                                           min_colour_halo_redshift if min_colour_halo_redshift is not None else None),
+        (max_colour_log_count,                    max_colour_metalicity_plotted,                                                                                                   1,                               1,                                    1,                                          max_colour_halo_mass,                                                                                           max_colour_halo_mass,                                                                                           max_colour_halo_redshift if max_colour_halo_redshift is not None else None)
     ):
-        if not ((plot_name == "histogram" and plot_hist) or (plot_name == "metallicity" and plot_metallicity) or (plot_name == "last-halo-mass" and plot_last_halo_mass) or (plot_name == "metal-weighted-last-halo-mass" and plot_metal_weighted_last_halo_mass) or (plot_name == "metal-weighted-last-halo-redshift" and plot_metal_weighted_last_halo_redshift)):
+        if not ((plot_name == "histogram" and plot_hist) or (plot_name == "metallicity" and plot_metallicity) or (plot_name == "tracked-particle-fraction" and plot_tracked_fraction) or (plot_name == "tracked-mass-fraction" and plot_tracked_mass_fraction) or (plot_name == "tracked-metal-mass-fraction" and plot_tracked_metal_mass_fraction) or (plot_name == "last-halo-mass" and plot_last_halo_mass) or (plot_name == "metal-weighted-last-halo-mass" and plot_metal_weighted_last_halo_mass) or (plot_name == "metal-weighted-last-halo-redshift" and plot_metal_weighted_last_halo_redshift)):
             continue
 
         plot_num += 1
@@ -625,14 +812,17 @@ async def __main(
 
         if colourmap is None:
             colourmap = tol_colors.LinearSegmentedColormap.from_list("custom-map", ["#125A56", "#FD9A44", "#A01813"])
+            #colourmap = tol_colors.LinearSegmentedColormap.from_list("custom-map", ["#00BEC1", "#FD9A44", "#A01813"])
+            #colourmap = tol_colors.LinearSegmentedColormap.from_list("custom-map", ["#5DA899", "#94CBEC", "#DCCD7D", "#C26A77"])
+            #colourmap = tol_colors.LinearSegmentedColormap.from_list("custom-map", ["#009e73", "#0072b2", "#56b4e9", "#f0e442", "#e69f00", "#d55e00"])
 
         coloured_object = plot_hexbin(
-            log10_particle_overdensities if not use_number_density else log10_particle_numberdensities,
-            log10_particle_temperatures,
+            (log10_particle_overdensities if not use_number_density else log10_particle_numberdensities) if plot_name not in ("tracked-particle-fraction", "tracked-mass-fraction", "tracked-metal-mass-fraction") else all_particle_densities,
+            log10_particle_temperatures if plot_name not in ("tracked-particle-fraction", "tracked-mass-fraction", "tracked-metal-mass-fraction") else all_log10_particle_temperatures,
             colour_reduction_function,
             vmin = min_colour, vmax = max_colour,
             cmap = colourmap,
-            gridsize = N_PLOTTING_HEXES,
+            gridsize = number_of_hexes,
             axis = axes[current_subplot_index]
         )
         fig.colorbar(
@@ -673,12 +863,13 @@ async def __main(
         if seperate_plots:
             axes[current_subplot_index].set_ylabel("${\\rm log_{10}}$ Temperature (${\\rm K}$)")
             if not use_number_density:
-                axes[current_subplot_index].set_xlabel("${\\rm log_{10}}$ Overdensity = $\\rho$/<$\\rm \\rho$>")
+                axes[current_subplot_index].set_xlabel("${\\rm log_{10}}$ $\\rho$/<$\\rm \\rho$>")
             else:
                 axes[current_subplot_index].set_xlabel("${\\rm log_{10}}$ $n_{\\rm H}$ ($\\rm cm^{-3}$)")
             if output_filepath is not None:
-                Console.print_info("Saving image...", end = "")
-                fig.savefig(output_filepath if n_subplots == 1 else (split_filename:=output_filepath.rsplit(".", maxsplit = 1))[0] + plot_name + "." + split_filename[1], dpi = 400)
+                plot_name = output_filepath if n_subplots == 1 else (split_filename:=output_filepath.rsplit(".", maxsplit = 1))[0] + plot_name + "." + split_filename[1]
+                Console.print_info(f"Saving image{'' if not (Settings.verbose or Settings.debug) else ' (' + plot_name + ')'}...", end = "")
+                fig.savefig(plot_name, dpi = 400)
                 Console.print("done")
             else:
                 Console.print_info("Rendering interactive window.")
@@ -690,14 +881,14 @@ async def __main(
                 axes[current_subplot_index].set_ylabel("${\\rm log_{10}}$ Temperature (${\\rm K}$)")
             if stack_row or current_subplot_index == n_subplots: # X-axis --> Bottom-most plot of column or all
                 if not use_number_density:
-                    axes[current_subplot_index].set_xlabel("${\\rm log_{10}}$ Overdensity = $\\rho$/<$\\rm \\rho$>")
+                    axes[current_subplot_index].set_xlabel("${\\rm log_{10}}$ $\\rho$/<$\\rm \\rho$>")
                 else:
                     axes[current_subplot_index].set_xlabel("${\\rm log_{10}}$ $n_{\\rm H}$ ($\\rm cm^{-3}$)")
             current_subplot_index += 1
 
     if not seperate_plots:
         if output_filepath is not None:
-            Console.print_info("Saving image...", end = "")
+            Console.print_info(f"Saving image{'' if not (Settings.verbose or Settings.debug) else ' (' + output_filepath + ')'}...", end = "")
             fig.savefig(output_filepath, dpi = 400)
             Console.print("done")
         else:
